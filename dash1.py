@@ -275,7 +275,15 @@ def get_mqtt_client_cached():
 # ====================================================================
 # BAGIAN 3: LOGIKA MQTT & CACHING
 # ====================================================================
+mqtt_client = None # <--- TAMBAHKAN INISIALISASI INI
 
+try:
+    # Coba panggil fungsi yang di-cache
+    mqtt_client = get_mqtt_client_cached() 
+except Exception as e:
+    # Jika bahkan pemanggilan cache gagal (jarang, tapi mungkin)
+    st.error(f"Error saat memanggil cache MQTT: {e}")
+    
 if mqtt_client is None:
     connected = False
 else:
@@ -517,6 +525,7 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
 
