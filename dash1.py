@@ -25,7 +25,7 @@ st.set_page_config(layout="wide", page_title="🛡️ Sistem Keamanan Brankas Te
 # ====================================================================
 # KONFIGURASI KONSTANTA & TOPIK MQTT
 # ====================================================================
-MQTT_BROKER = "broker.eemqx.io" 
+MQTT_BROKER = "broker.emqx.io" 
 MQTT_PORT = 1883
 
 TOPIC_BRANKAS = "data/status/kontrol"        
@@ -528,6 +528,7 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
 
