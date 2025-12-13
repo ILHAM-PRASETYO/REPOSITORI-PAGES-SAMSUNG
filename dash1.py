@@ -524,7 +524,7 @@ with tab1:
             st.audio(st.session_state.audio_url, format='audio/wav')
             
 
-[Image of an audio waveform]
+#[Image of an audio waveform]
 
         else:
             st.info("Menunggu link audio dari ESP32...")
@@ -544,4 +544,5 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
