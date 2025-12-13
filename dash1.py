@@ -82,10 +82,7 @@ def download_models_from_gdrive():
     global DOWNLOAD_LOGS
     
     files_to_download = [
-        (GD_MODEL_IMAGE_ID, 'image_model.pkl'),
-        (GD_SCALER_IMAGE_ID, 'image_scaler.pkl'),
-        (GD_MODEL_VOICE_ID, 'audio_model.pkl'),
-        (GD_SCALER_VOICE_ID, 'audio_scaler.pkl')
+        (GD_MODEL_IMAGE_ID, 'image_model.pkl')
     ]
     
     for file_id, filename in files_to_download:
@@ -531,4 +528,5 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
