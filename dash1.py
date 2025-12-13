@@ -261,10 +261,6 @@ def download_and_process_media(url, media_type, mqtt_client):
 # ====================================================================
 # BAGIAN 3: LOGIKA MQTT & CACHING
 # ====================================================================
-
-mqtt_client = get_mqtt_client_cached()
-if not mqtt_client: st.stop() 
-
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         # Mengatur status koneksi di session state
@@ -451,6 +447,8 @@ def process_queue_and_logic():
 # ====================================================================
 st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
+mqtt_client = get_mqtt_client_cached()
+if not mqtt_client: st.stop() 
 # FIX ERROR Attribute: MENGGUNAKAN GETATTR
 connected = getattr(st.session_state, "mqtt_connected", False)
 st.caption(f"Status MQTT: {'Terhubung 🟢' if connected else 'Terputus 🔴'} | Broker: {MQTT_BROKER}")
@@ -537,5 +535,6 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
