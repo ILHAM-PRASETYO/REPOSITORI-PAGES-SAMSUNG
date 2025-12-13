@@ -409,14 +409,23 @@ def process_queue_and_logic():
 # ====================================================================
 st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
-mqtt_client = get_mqtt_client_cached()
+st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
-if not mqtt_client: 
-    st.error("Gagal inisialisasi Client MQTT")
+# --- PERBAIKAN: JAMIN VARIABEL TERDEFINISI ---
+mqtt_client = None # <--- TAMBAHKAN INISIALISASI INI
+
+try:
+    # Coba panggil fungsi yang di-cache
+    mqtt_client = get_mqtt_client_cached() 
+except Exception as e:
+    # Jika bahkan pemanggilan cache gagal (jarang, tapi mungkin)
+    st.error(f"Error saat memanggil cache MQTT: {e}")
+
+# Baris 279 (Sekarang aman):
+if mqtt_client is None:
+    # Logika yang Anda inginkan jika koneksi gagal total
+    st.error("❌ Klien MQTT Gagal diinisialisasi atau koneksi awal gagal.")
     st.stop()
-
-# LOGIKA UTAMA STATUS UPDATE: Menggunakan .is_connected()
-is_online = getattr(mqtt_client, 'status_terhubung', False)
 if is_online:
     st.caption(f"Status MQTT: **Terhubung** 🟢 | Broker: {MQTT_BROKER}")
 else:
@@ -508,6 +517,7 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
 
