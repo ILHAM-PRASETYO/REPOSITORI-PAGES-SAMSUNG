@@ -67,8 +67,8 @@ def save_response_content(response, destination):
 
 def download_file_from_google_drive(id, destination):
     """Mengunduh file dari GDrive menggunakan requests."""
-    # Menggunakan URL download GDrive yang benar
-    URL = "https://drive.google.com/drive/folders/15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6?usp=sharing" 
+    # MENGUBAH URL DARI URL FOLDER KE URL FILE DOWNLOAD YANG BENAR
+    URL = "https://drive.google.com/drive/folders/15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6?export=download" 
     session = requests.Session()
     response = session.get(URL, params = { 'id' : id }, stream = True)
     token = get_confirm_token(response)
@@ -85,7 +85,7 @@ def download_models_from_gdrive():
     
     # --- HANYA DAFTARKAN FILE YANG MEMILIKI ID GDrive VALID ---
     files_to_download = [
-        # Hanya model wajah yang ID-nya sudah pasti ada/diberikan
+        # Kita paksakan unduh ulang image_model.pkl
         (GD_MODEL_IMAGE_ID, 'image_model.pkl'),
     ]
     
@@ -96,21 +96,21 @@ def download_models_from_gdrive():
         'audio_scaler.pkl'
     ]
     
+    # Memaksa unduh ulang image_model.pkl untuk memperbaiki potensi korup
+    for file_id, filename in files_to_download:
+        try:
+            DOWNLOAD_LOGS.append(("warning", f"🔄 Mengunduh ulang {filename} dari GDrive untuk memastikan integritas..."))
+            download_file_from_google_drive(file_id, filename) 
+            DOWNLOAD_LOGS.append(("success", f"✅ {filename} berhasil diunduh dan diperbarui."))
+        except Exception as e:
+            DOWNLOAD_LOGS.append(("error", f"❌ Gagal mengunduh {filename}. Pastikan ID benar dan file PUBLIC. Error: {e}"))
+
+    # Pengecekan sisa file lokal
     for filename in local_files_check:
         if os.path.exists(filename):
             DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada di lokal, melewati download."))
-    
-    # Proses download file yang ID-nya tersedia
-    for file_id, filename in files_to_download:
-        if not os.path.exists(filename):
-            try:
-                DOWNLOAD_LOGS.append(("info", f"📥 Mencoba mengunduh {filename} dari GDrive..."))
-                download_file_from_google_drive(file_id, filename) 
-                DOWNLOAD_LOGS.append(("success", f"✅ {filename} berhasil diunduh."))
-            except Exception as e:
-                DOWNLOAD_LOGS.append(("error", f"❌ Gagal mengunduh {filename}. Pastikan ID benar dan file PUBLIC. Error: {e}"))
         else:
-             DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada di lokal, melewati download."))
+             DOWNLOAD_LOGS.append(("error", f"❌ {filename} tidak ditemukan. Model Suara/Skala Wajah tidak akan bekerja."))
                 
 download_models_from_gdrive() 
 
@@ -118,7 +118,7 @@ download_models_from_gdrive()
 # ====================================================================
 # BAGIAN 1: INISIALISASI SESSION STATE
 # ====================================================================
-# Inisialisasi 'mqtt_connected' di awal blok ini
+# HAPUS st.session_state.mqtt_connected karena akan menyebabkan konflik thread!
 if 'mqtt_internal_queue' not in st.session_state: 
     st.session_state.mqtt_internal_queue = queue.Queue()
 
@@ -261,9 +261,11 @@ def download_and_process_media(url, media_type, mqtt_client):
 # ====================================================================
 # BAGIAN 3: LOGIKA MQTT & CACHING
 # ====================================================================
+
 def on_connect(client, userdata, flags, rc, properties=None):
+    """Dipanggil ketika klien berhasil terhubung ke broker."""
     if rc == 0:
-        # Mengatur status koneksi di session state
+        # HAPUS: st.session_state.mqtt_connected = True / False
         
         result, mid = client.subscribe([ 
             (TOPIC_BRANKAS, 0), 
@@ -274,12 +276,18 @@ def on_connect(client, userdata, flags, rc, properties=None):
         ])
         
         if result != 0 :
-            print(f'❌ MQTT Inconnected (Subscription Error Code: {result})')
+            print(f'❌ MQTT Subscription Error Code: {result}')
         else :
             print('✅ MQTT Connected (Subscribed)')
     else:
-        # Jika koneksi gagal, atur status ke False
-        print(f'❌ MQTT Connection Failed with code: {rc}')
+        print(f'❌ MQTT Connection Failed with code: {rc}. Dashboard akan membaca status FALSE.')
+
+def on_disconnect(client, userdata, rc):
+    """Dipanggil ketika koneksi terputus."""
+    if rc != 0:
+        print(f"⚠️ MQTT Unexpected Disconnection. Retrying... (Code: {rc})")
+    else:
+        print("ℹ️ MQTT Disconnected cleanly.")
 
 
 def on_message(client, userdata, msg):
@@ -300,10 +308,9 @@ def get_mqtt_client_cached():
     try:
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
         
-        # NOTE PENTING: Jangan mengatur st.session_state di on_connect/on_message,
-        # biarkan Streamlit utama yang membaca status koneksi dari client object.
         client.on_connect = on_connect
         client.on_message = on_message
+        client.on_disconnect = on_disconnect # Tambahkan on_disconnect
         client.user_data_set(st.session_state.mqtt_internal_queue) 
         
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
@@ -314,7 +321,6 @@ def get_mqtt_client_cached():
         
         return client
     except Exception as e:
-        # Jika koneksi gagal total (Exception), status ini tidak perlu diubah.
         st.error(f"❌ Gagal Connect MQTT ke {MQTT_BROKER}:{MQTT_PORT}. Error: {e}")
         return None
 
@@ -449,8 +455,9 @@ st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
 mqtt_client = get_mqtt_client_cached()
 if not mqtt_client: st.stop() 
-# FIX ERROR Attribute: MENGGUNAKAN GETATTR
-connected = getattr(st.session_state, "mqtt_connected", False)
+
+# LOGIKA UTAMA STATUS UPDATE: Menggunakan .is_connected()
+connected = mqtt_client.is_connected() 
 st.caption(f"Status MQTT: {'Terhubung 🟢' if connected else 'Terputus 🔴'} | Broker: {MQTT_BROKER}")
 
 # TAMPILKAN LOG STATUS DOWNLOAD
@@ -535,6 +542,3 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
-
-
-
