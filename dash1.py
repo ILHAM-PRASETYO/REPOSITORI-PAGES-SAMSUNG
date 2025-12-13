@@ -1,4 +1,4 @@
-15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6import streamlit as st
+import streamlit as st
 import paho.mqtt.client as mqtt
 import pandas as pd
 import time
@@ -544,3 +544,4 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
