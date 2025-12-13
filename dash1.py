@@ -119,9 +119,6 @@ download_models_from_gdrive()
 # BAGIAN 1: INISIALISASI SESSION STATE
 # ====================================================================
 # Inisialisasi 'mqtt_connected' di awal blok ini
-if 'mqtt_connected' not in st.session_state:
-    st.session_state.mqtt_connected = False
-
 if 'mqtt_internal_queue' not in st.session_state: 
     st.session_state.mqtt_internal_queue = queue.Queue()
 
@@ -268,7 +265,6 @@ def download_and_process_media(url, media_type, mqtt_client):
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         # Mengatur status koneksi di session state
-        st.session_state.mqtt_connected = True
         
         result, mid = client.subscribe([ 
             (TOPIC_BRANKAS, 0), 
@@ -284,7 +280,6 @@ def on_connect(client, userdata, flags, rc, properties=None):
             print('✅ MQTT Connected (Subscribed)')
     else:
         # Jika koneksi gagal, atur status ke False
-        st.session_state.mqtt_connected = False
         print(f'❌ MQTT Connection Failed with code: {rc}')
 
 
@@ -306,16 +301,22 @@ def get_mqtt_client_cached():
     try:
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
         
+        # NOTE PENTING: Jangan mengatur st.session_state di on_connect/on_message,
+        # biarkan Streamlit utama yang membaca status koneksi dari client object.
         client.on_connect = on_connect
         client.on_message = on_message
         client.user_data_set(st.session_state.mqtt_internal_queue) 
+        
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
         client.loop_start()
+        
+        # Tambahkan delay singkat
+        time.sleep(1) 
+        
         return client
     except Exception as e:
-        if 'mqtt_connected' in st.session_state:
-             st.session_state.mqtt_connected = False
-        st.error(f"Gagal Connect MQTT: {e}")
+        # Jika koneksi gagal total (Exception), status ini tidak perlu diubah.
+        st.error(f"❌ Gagal Connect MQTT ke {MQTT_BROKER}:{MQTT_PORT}. Error: {e}")
         return None
 
 # ====================================================================
@@ -445,10 +446,6 @@ def process_queue_and_logic():
 # ====================================================================
 # BAGIAN 5: UI DASHBOARD (STREAMLIT) - Menggunakan 3 Tabs
 # ====================================================================
-
-mqtt_client = get_mqtt_client_cached()
-if not mqtt_client: st.stop() 
-
 st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
 # FIX ERROR Attribute: MENGGUNAKAN GETATTR
@@ -537,3 +534,4 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
