@@ -4,131 +4,126 @@ import pandas as pd
 import time
 from datetime import datetime
 import os
-import plotly.graph_objects as go
-import numpy as np
-import requests
-import pickle
-from PIL import Image
 import queue
-import librosa
-from io import BytesIO
-import json 
+import json
 
-# Global variable to store download messages (Untuk ditampilkan di UI)
-DOWNLOAD_LOGS = []
+# ... (inisialisasi konstanta dan session state lainnya di atas)
 
 # ====================================================================
-# KONFIGURASI HALAMAN & LAYOUT
+# BAGIAN 1: INISIALISASI SESSION STATE (Pastikan ini ada)
 # ====================================================================
-st.set_page_config(layout="wide", page_title="🛡️ Sistem Keamanan Brankas Terpadu")
+
+if 'mqtt_internal_queue' not in st.session_state: 
+    st.session_state.mqtt_internal_queue = queue.Queue()
+
+if 'data_brankas' not in st.session_state:
+    st.session_state.data_brankas = pd.DataFrame(columns=["Timestamp", "Status Brankas", "Jarak (cm)", "PIR", "Prediksi Wajah", "Prediksi Suara", "Label Prediksi"])
+    
+if 'data_face' not in st.session_state:
+    st.session_state.data_face = pd.DataFrame(columns=["Timestamp", "Hasil Prediksi", "Status", "Keterangan"])
+    
+if 'data_voice' not in st.session_state:
+    st.session_state.data_voice = pd.DataFrame(columns=["Timestamp", "Hasil Prediksi", "Status", "Keterangan"])
+    
+if 'photo_url' not in st.session_state: st.session_state.photo_url = "https://via.placeholder.com/640x480?text=Menunggu+Foto"
+if 'audio_url' not in st.session_state: st.session_state.audio_url = None
+if 'last_refresh' not in st.session_state: st.session_state.last_refresh = time.time()
+if 'mqtt_connected' not in st.session_state: st.session_state.mqtt_connected = False
+if 'mqtt_client' not in st.session_state: st.session_state.mqtt_client = None
 
 # ====================================================================
-# KONFIGURASI KONSTANTA & TOPIK MQTT
+# KONSTANTA MQTT (Pastikan ini didefinisikan)
 # ====================================================================
 MQTT_BROKER = "broker.emqx.io" 
 MQTT_PORT = 1883
-
-TOPIC_BRANKAS = "data/status/kontrol"        
-TOPIC_FACE_RESULT = "ai/face/result"       
-TOPIC_VOICE_RESULT = "ai/voice/result"     
-TOPIC_CAM_URL = "iot/camera/photo"         
-TOPIC_AUDIO_LINK = "data/audio/link"       
-TOPIC_ALARM = "data/Allert/kontrol"        
-TOPIC_CAM_TRIGGER = "data/cam/capture"     
-TOPIC_REC_TRIGGER = "data/mic/trigger"     
-
-# Konfigurasi ML
-IMG_SIZE = 96
-CLASS_NAMES_FACE = ['ANGGI_FACES', 'DEVI_FACES', 'FARIDA_FACES', 'ILHAM_FACES', 'OTHER_FACES']
-CLASS_NAMES_VOICE = ['MY_YES','ANOTHER_YES','NOT_YS','NOISE']
-SAMPLE_RATE = 16000
-N_MFCC = 40
+TOPIC_BRANKAS = "data/status/kontrol"
+TOPIC_FACE_RESULT = "ai/face/result"
+TOPIC_VOICE_RESULT = "ai/voice/result"
+TOPIC_CAM_URL = "iot/camera/photo"
+TOPIC_AUDIO_LINK = "data/audio/link"
+TOPIC_ALARM = "data/Allert/kontrol"
+TOPIC_CAM_TRIGGER = "data/cam/trigger"
+TOPIC_REC_TRIGGER = "data/mic/trigger"
 
 # ====================================================================
-# HTTP LOGIC: GOOGLE DRIVE DOWNLOADER
-# *** PASTIKAN ID DI BAWAH INI ADALAH ID FILE, BUKAN ID FOLDER ***
+# BAGIAN 3: LOGIKA MQTT (Tanpa Cache)
 # ====================================================================
-GD_MODEL_IMAGE_ID = "15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6" # ID Model Wajah (Diperlukan)
 
-def get_confirm_token(response):
-    for key, value in response.cookies.items():
-        if key.startswith('download_warning'):
-            return value
-    return None
+def on_connect(client, userdata, flags, rc, properties=None):
+    if rc == 0:
+        st.session_state.mqtt_connected = True
+        print("MQTT Connected")
+        client.subscribe([
+            (TOPIC_BRANKAS, 0),
+            (TOPIC_FACE_RESULT, 0),
+            (TOPIC_VOICE_RESULT, 0),
+            (TOPIC_CAM_URL, 0),
+            (TOPIC_AUDIO_LINK, 0),
+        ])
+    else:
+        st.session_state.mqtt_connected = False
+        print(f"MQTT Connection failed with code {rc}")
 
-def save_response_content(response, destination):
-    CHUNK_SIZE = 32768
-    with open(destination, "wb") as f:
-        for chunk in response.iter_content(CHUNK_SIZE):
-            if chunk: 
-                f.write(chunk)
+def on_message(client, userdata, msg, properties=None):
+    # Tambahkan pesan ke queue untuk diproses di rerun berikutnya
+    try:
+        payload_str = msg.payload.decode("utf-8")
+    except UnicodeDecodeError:
+        payload_str = str(msg.payload) # Fallback untuk payload non-string
+    message_data = {
+        'topic': msg.topic,
+        'payload': payload_str,
+        'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    st.session_state.mqtt_internal_queue.put(message_data)
 
-def download_file_from_google_drive(id, destination):
-    """Mengunduh file dari GDrive menggunakan requests."""
-    URL = "https://docs.google.com/uc?export=download"
-    session = requests.Session()
-    response = session.get(URL, params = { 'id' : id }, stream = True)
-    token = get_confirm_token(response)
+def get_mqtt_client():
+    """Inisialisasi klien MQTT TANPA Cache."""
+    client_id = f"StreamlitApp-{os.getpid()}-{int(time.time())}"
+    try:
+        client = mqtt.Client(
+            client_id=client_id,
+            protocol=mqtt.MQTTv311,
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2
+        )
+        client.on_connect = on_connect
+        client.on_message = on_message
+        # Coba connect
+        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        # Jika connect berhasil, start loop
+        client.loop_start()
+        return client
+    except Exception as e:
+        st.error(f"Gagal Connect MQTT: {e}")
+        return None
 
-    if token:
-        params = { 'id' : id, 'confirm' : token }
-        response = session.get(URL, params = params, stream = True)
+# --- PERBAIKAN: Jangan gunakan cache resource ---
+# Inisialisasi MQTT Client di session state untuk persistensi
+# Hanya inisialisasi jika belum ada dan status bukan connected
+if st.session_state.mqtt_client is None:
+    print("Mencoba inisialisasi MQTT Client...")
+    st.session_state.mqtt_client = get_mqtt_client()
 
-    save_response_content(response, destination)    
+# Ambil status koneksi dari session state
+is_online = st.session_state.mqtt_client and st.session_state.mqtt_connected
 
-def download_models_from_gdrive():
-    """Mengunduh file model yang diperlukan dari Google Drive jika belum ada atau tidak valid."""
-    global DOWNLOAD_LOGS
-    
-    # --- DAFTAR FILE YANG HARUS DIUNDUH ---
-    files_to_download = [
-        (GD_MODEL_IMAGE_ID, 'image_model.pkl'),
-    ]
-    
-    # --- DAFTAR FILE YANG HARUS DICEK KEBERADAANNYA ---
-    local_files_check = [
-        'image_scaler.pkl',
-        'audio_model.pkl',
-        'audio_scaler.pkl'
-    ]
-    
-    for file_id, filename in files_to_download:
-        # Cek apakah file ada dan valid
-        if os.path.exists(filename):
+# --- PERBAIKAN: Tambahkan tombol reconnect manual ---
+if not is_online:
+    if st.button("🔄 Coba Hubungkan Ulang"):
+        print("Memaksa reconnect MQTT...")
+        if st.session_state.mqtt_client:
             try:
-                # Coba load untuk validasi
-                with open(filename, 'rb') as f:
-                    pickle.load(f)
-                DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada dan valid, melewati download."))
-            except Exception as e:
-                DOWNLOAD_LOGS.append(("warning", f"⚠️ {filename} ditemukan tapi tidak valid, mengunduh ulang..."))
-                try:
-                    download_file_from_google_drive(file_id, filename)
-                    DOWNLOAD_LOGS.append(("success", f"✅ {filename} berhasil diunduh ulang."))
-                except Exception as e:
-                    DOWNLOAD_LOGS.append(("error", f"❌ Gagal mengunduh {filename}: {e}"))
-        else:
-            DOWNLOAD_LOGS.append(("warning", f"⚠️ {filename} tidak ditemukan, mengunduh..."))
-            try:
-                download_file_from_google_drive(file_id, filename)
-                DOWNLOAD_LOGS.append(("success", f"✅ {filename} berhasil diunduh."))
-            except Exception as e:
-                DOWNLOAD_LOGS.append(("error", f"❌ Gagal mengunduh {filename}: {e}"))
+                st.session_state.mqtt_client.loop_stop()
+                st.session_state.mqtt_client.disconnect()
+            except:
+                pass  # Jika gagal disconnect, lanjutkan
+        # Reset status
+        st.session_state.mqtt_connected = False
+        st.session_state.mqtt_client = get_mqtt_client()
+        # Refresh halaman agar status update
+        st.rerun()
 
-    # Pengecekan sisa file lokal
-    for filename in local_files_check:
-        if os.path.exists(filename):
-            try:
-                # Coba load untuk validasi
-                with open(filename, 'rb') as f:
-                    pickle.load(f)
-                DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada dan valid."))
-            except Exception as e:
-                DOWNLOAD_LOGS.append(("error", f"❌ {filename} ditemukan tapi tidak valid: {e}"))
-        else:
-             DOWNLOAD_LOGS.append(("error", f"❌ {filename} tidak ditemukan. Model Suara/Skala Wajah tidak akan bekerja."))
-
-download_models_from_gdrive() 
+# ... (sisa kode Anda, termasuk process_queue_and_logic, UI, dll) 
 
 # ====================================================================
 # BAGIAN 1: INISIALISASI SESSION STATE
@@ -558,5 +553,6 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
