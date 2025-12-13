@@ -262,6 +262,9 @@ def download_and_process_media(url, media_type, mqtt_client):
 # BAGIAN 3: LOGIKA MQTT & CACHING
 # ====================================================================
 
+mqtt_client = get_mqtt_client_cached()
+if not mqtt_client: st.stop() 
+
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
         # Mengatur status koneksi di session state
@@ -534,4 +537,5 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
