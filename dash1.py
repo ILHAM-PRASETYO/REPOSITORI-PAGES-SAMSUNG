@@ -48,9 +48,7 @@ N_MFCC = 40
 # HTTP LOGIC: GOOGLE DRIVE DOWNLOADER
 # *** PASTIKAN ID DI BAWAH INI ADALAH ID FILE, BUKAN ID FOLDER ***
 # ====================================================================
-# Hanya GD_MODEL_IMAGE_ID yang didefinisikan, ID lain akan dianggap sudah ada di lokal
 GD_MODEL_IMAGE_ID = "15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6" # ID Model Wajah (Diperlukan)
-
 
 def get_confirm_token(response):
     for key, value in response.cookies.items():
@@ -67,7 +65,6 @@ def save_response_content(response, destination):
 
 def download_file_from_google_drive(id, destination):
     """Mengunduh file dari GDrive menggunakan requests."""
-    # MENGUBAH URL DARI URL FOLDER KE URL FILE DOWNLOAD YANG BENAR
     URL = "https://docs.google.com/uc?export=download"
     session = requests.Session()
     response = session.get(URL, params = { 'id' : id }, stream = True)
@@ -80,45 +77,63 @@ def download_file_from_google_drive(id, destination):
     save_response_content(response, destination)    
 
 def download_models_from_gdrive():
-    """Mengunduh file model yang diperlukan dari Google Drive jika belum ada."""
+    """Mengunduh file model yang diperlukan dari Google Drive jika belum ada atau tidak valid."""
     global DOWNLOAD_LOGS
     
-    # --- HANYA DAFTARKAN FILE YANG MEMILIKI ID GDrive VALID ---
+    # --- DAFTAR FILE YANG HARUS DIUNDUH ---
     files_to_download = [
-        # Kita paksakan unduh ulang image_model.pkl
         (GD_MODEL_IMAGE_ID, 'image_model.pkl'),
     ]
     
-    # --- Tambahkan file model/scaler lain yang DIASUMSIKAN SUDAH ADA LOKAL ---
+    # --- DAFTAR FILE YANG HARUS DICEK KEBERADAANNYA ---
     local_files_check = [
         'image_scaler.pkl',
         'audio_model.pkl',
         'audio_scaler.pkl'
     ]
     
-    # Memaksa unduh ulang image_model.pkl untuk memperbaiki potensi korup
     for file_id, filename in files_to_download:
-        try:
-            DOWNLOAD_LOGS.append(("warning", f"🔄 Mengunduh ulang {filename} dari GDrive untuk memastikan integritas..."))
-            download_file_from_google_drive(file_id, filename) 
-            DOWNLOAD_LOGS.append(("success", f"✅ {filename} berhasil diunduh dan diperbarui."))
-        except Exception as e:
-            DOWNLOAD_LOGS.append(("error", f"❌ Gagal mengunduh {filename}. Pastikan ID benar dan file PUBLIC. Error: {e}"))
+        # Cek apakah file ada dan valid
+        if os.path.exists(filename):
+            try:
+                # Coba load untuk validasi
+                with open(filename, 'rb') as f:
+                    pickle.load(f)
+                DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada dan valid, melewati download."))
+            except Exception as e:
+                DOWNLOAD_LOGS.append(("warning", f"⚠️ {filename} ditemukan tapi tidak valid, mengunduh ulang..."))
+                try:
+                    download_file_from_google_drive(file_id, filename)
+                    DOWNLOAD_LOGS.append(("success", f"✅ {filename} berhasil diunduh ulang."))
+                except Exception as e:
+                    DOWNLOAD_LOGS.append(("error", f"❌ Gagal mengunduh {filename}: {e}"))
+        else:
+            DOWNLOAD_LOGS.append(("warning", f"⚠️ {filename} tidak ditemukan, mengunduh..."))
+            try:
+                download_file_from_google_drive(file_id, filename)
+                DOWNLOAD_LOGS.append(("success", f"✅ {filename} berhasil diunduh."))
+            except Exception as e:
+                DOWNLOAD_LOGS.append(("error", f"❌ Gagal mengunduh {filename}: {e}"))
 
     # Pengecekan sisa file lokal
     for filename in local_files_check:
         if os.path.exists(filename):
-            DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada di lokal, melewati download."))
+            try:
+                # Coba load untuk validasi
+                with open(filename, 'rb') as f:
+                    pickle.load(f)
+                DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada dan valid."))
+            except Exception as e:
+                DOWNLOAD_LOGS.append(("error", f"❌ {filename} ditemukan tapi tidak valid: {e}"))
         else:
              DOWNLOAD_LOGS.append(("error", f"❌ {filename} tidak ditemukan. Model Suara/Skala Wajah tidak akan bekerja."))
-                
-download_models_from_gdrive() 
 
+download_models_from_gdrive() 
 
 # ====================================================================
 # BAGIAN 1: INISIALISASI SESSION STATE
 # ====================================================================
-# HAPUS st.session_state.mqtt_connected karena akan menyebabkan konflik thread!
+
 if 'mqtt_internal_queue' not in st.session_state: 
     st.session_state.mqtt_internal_queue = queue.Queue()
 
@@ -134,7 +149,8 @@ if 'data_voice' not in st.session_state:
 if 'photo_url' not in st.session_state: st.session_state.photo_url = "https://via.placeholder.com/640x480?text=Menunggu+Foto"
 if 'audio_url' not in st.session_state: st.session_state.audio_url = None
 if 'last_refresh' not in st.session_state: st.session_state.last_refresh = time.time()
-
+# Tambahkan variabel untuk status koneksi
+if 'mqtt_connected' not in st.session_state: st.session_state.mqtt_connected = False
 
 # ====================================================================
 # BAGIAN 2: FUNGSI MACHINE LEARNING
@@ -155,6 +171,7 @@ def load_ml_models():
     except Exception as e:
         models['face_svc'] = None
         models['face_scaler'] = None
+        st.error(f"Error load model wajah: {e}")
 
     # --- LOAD MODEL SUARA (Dari Lokal) ---
     try:
@@ -166,12 +183,13 @@ def load_ml_models():
     except Exception as e:
         models['voice_svc'] = None
         models['voice_scaler'] = None
+        st.error(f"Error load model suara: {e}")
 
     return models, load_status
 
 ml_models, ml_status = load_ml_models() 
 
-# Notifikasi status model (diubah menjadi toast)
+# Notifikasi status model
 if ml_status["face"]:
     st.toast("✅ Model Wajah Dimuat dari Lokal", icon="🖼️")
 else:
@@ -258,12 +276,44 @@ def download_and_process_media(url, media_type, mqtt_client):
         print(f"Error processing media: {e}")
         st.toast(f"Error pemrosesan media: {e}", icon='❌')
 
-@st.cache_resource
-def get_mqtt_client_cached():
-    """Inisialisasi klien MQTT dengan Cache Resource agar tidak error 'Too many open files'"""
+# ====================================================================
+# BAGIAN 3: LOGIKA MQTT (Tanpa Cache)
+# ====================================================================
+
+# Definisikan callback di luar fungsi untuk menghindari masalah referensi
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        st.session_state.mqtt_connected = True
+        print("MQTT Connected")
+        client.subscribe([
+            (TOPIC_BRANKAS, 0),
+            (TOPIC_FACE_RESULT, 0),
+            (TOPIC_VOICE_RESULT, 0),
+            (TOPIC_CAM_URL, 0),
+            (TOPIC_AUDIO_LINK, 0),
+        ])
+    else:
+        st.session_state.mqtt_connected = False
+        print(f"MQTT Connection failed with code {rc}")
+
+def on_message(client, userdata, msg):
+    # Tambahkan pesan ke queue untuk diproses di rerun berikutnya
+    try:
+        payload_str = msg.payload.decode("utf-8")
+    except UnicodeDecodeError:
+        payload_str = str(msg.payload) # Fallback untuk payload non-string
+    message_data = {
+        'topic': msg.topic,
+        'payload': payload_str,
+        'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    st.session_state.mqtt_internal_queue.put(message_data)
+
+def get_mqtt_client():
+    """Inisialisasi klien MQTT TANPA Cache."""
     client_id = f"StreamlitApp-{os.getpid()}-{int(time.time())}"
     try:
-        client = mqtt.Client(client_id=client_id, clean_session=True)
+        client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311)
         client.on_connect = on_connect
         client.on_message = on_message
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
@@ -272,23 +322,15 @@ def get_mqtt_client_cached():
     except Exception as e:
         st.error(f"Gagal Connect MQTT: {e}")
         return None
-# ====================================================================
-# BAGIAN 3: LOGIKA MQTT & CACHING
-# ====================================================================
-mqtt_client = None # <--- TAMBAHKAN INISIALISASI INI
 
-try:
-    # Coba panggil fungsi yang di-cache
-    mqtt_client = get_mqtt_client_cached() 
-except Exception as e:
-    # Jika bahkan pemanggilan cache gagal (jarang, tapi mungkin)
-    st.error(f"Error saat memanggil cache MQTT: {e}")
-    
-if mqtt_client is None:
-    connected = False
-else:
-    # Cek status asli dari library Paho
-    connected = mqtt_client.is_connected()# ====================================================================
+# Inisialisasi MQTT Client di session state untuk persistensi
+if 'mqtt_client' not in st.session_state:
+    st.session_state.mqtt_client = get_mqtt_client()
+
+# Ambil status koneksi dari session state
+is_online = st.session_state.mqtt_client and st.session_state.mqtt_connected
+
+# ====================================================================
 # BAGIAN 4: PROSES ANTRIAN DATA (FUNGSI UTAMA)
 # ====================================================================
 def process_queue_and_logic():
@@ -305,7 +347,8 @@ def process_queue_and_logic():
 
     if not messages: return False 
 
-    client = get_mqtt_client_cached()
+    # Ambil klien dari session state
+    client = st.session_state.mqtt_client
 
     for msg in messages:
         topic = msg['topic']
@@ -417,30 +460,14 @@ def process_queue_and_logic():
 # ====================================================================
 st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
-st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
-
-# --- PERBAIKAN: JAMIN VARIABEL TERDEFINISI ---
-mqtt_client = None # <--- TAMBAHKAN INISIALISASI INI
-
-try:
-    # Coba panggil fungsi yang di-cache
-    mqtt_client = get_mqtt_client_cached() 
-except Exception as e:
-    # Jika bahkan pemanggilan cache gagal (jarang, tapi mungkin)
-    st.error(f"Error saat memanggil cache MQTT: {e}")
-
-# Baris 279 (Sekarang aman):
-if mqtt_client is None:
-    # Logika yang Anda inginkan jika koneksi gagal total
-    st.error("❌ Klien MQTT Gagal diinisialisasi atau koneksi awal gagal.")
-    st.stop()
+# Tampilkan status koneksi MQTT
 if is_online:
     st.caption(f"Status MQTT: **Terhubung** 🟢 | Broker: {MQTT_BROKER}")
 else:
     st.caption(f"Status MQTT: **Terputus** 🔴 | Broker: {MQTT_BROKER}")
     # Opsional: Tampilkan tombol reconnect manual
     if st.button("🔄 Coba Hubungkan Ulang"):
-        st.cache_resource.clear()
+        st.session_state.mqtt_client = get_mqtt_client()
         st.rerun()
 
 # TAMPILKAN LOG STATUS DOWNLOAD
@@ -469,7 +496,7 @@ with tab1:
         st.subheader("📡 Live Sensor Data & Log Brankas")
         df = st.session_state.data_brankas.tail(50)
         
-        if not df.empty and 'Jarak (cm)' in df and 'PIR' in df:
+        if not df.empty and 'Jarak (cm)' in df.columns and 'PIR' in df.columns:
             df_plot = df.set_index("Timestamp").copy()
             df_clean = df_plot.dropna(subset=['Jarak (cm)', 'PIR'])
             
@@ -484,23 +511,28 @@ with tab1:
                 yaxis2=dict(title="PIR (1=Gerak)", overlaying="y", side="right", range=[-0.1, 1.1], tickvals=[0, 1]),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Menunggu data sensor untuk membuat grafik...")
 
     with col2:
         st.subheader("📸 Media & Kontrol")
         
-        st.image(st.session_state.photo_url, caption="Foto dari Kamera Terakhir", width='stretch')
+        st.image(st.session_state.photo_url, caption="Foto dari Kamera Terakhir", use_container_width=True)
         
         c1, c2, c3 = st.columns(3)
-        if c1.button("📷 FOTO", help="Memicu ESP32 untuk mengambil foto", width='stretch'): mqtt_client.publish(TOPIC_CAM_TRIGGER, "capture")
-        if c2.button("🎤 VOICE", help="Memicu ESP32 untuk merekam/kirim audio", width='stretch'): mqtt_client.publish(TOPIC_REC_TRIGGER, "trigger")
-        if c3.button("🔇 OFF ALARM", help="Mematikan Alarm/Buzzer", width='stretch'): mqtt_client.publish(TOPIC_ALARM, "OFF")
+        if c1.button("📷 FOTO", help="Memicu ESP32 untuk mengambil foto", use_container_width=True) and is_online:
+            st.session_state.mqtt_client.publish(TOPIC_CAM_TRIGGER, "capture")
+        if c2.button("🎤 VOICE", help="Memicu ESP32 untuk merekam/kirim audio", use_container_width=True) and is_online:
+            st.session_state.mqtt_client.publish(TOPIC_REC_TRIGGER, "trigger")
+        if c3.button("🔇 OFF ALARM", help="Mematikan Alarm/Buzzer", use_container_width=True) and is_online:
+            st.session_state.mqtt_client.publish(TOPIC_ALARM, "OFF")
 
         col_reset, col_kontroll = st.columns(2)
-        if col_reset.button("🔄 RESET", help="Reset/Clear Status di ESP32", width='stretch'): mqtt_client.publish(TOPIC_BRANKAS, "RESET")
-        if col_kontroll.button("OPEN", help="Memicu Open", width='stretch'): mqtt_client.publish(TOPIC_BRANKAS, "OPEN")
+        if col_reset.button("🔄 RESET", help="Reset/Clear Status di ESP32", use_container_width=True) and is_online:
+            st.session_state.mqtt_client.publish(TOPIC_BRANKAS, "RESET")
+        if col_kontroll.button("OPEN", help="Memicu Open", use_container_width=True) and is_online:
+            st.session_state.mqtt_client.publish(TOPIC_BRANKAS, "OPEN")
         
         st.markdown("---")
         st.write("🔊 Audio Terakhir:")
@@ -512,16 +544,17 @@ with tab1:
 
 with tab2: 
     st.subheader("Data Log Brankas (Raw)")
-    st.dataframe(st.session_state.data_brankas.iloc[::-1], width='stretch')
+    st.dataframe(st.session_state.data_brankas.iloc[::-1], use_container_width=True)
 
 with tab3:
     st.subheader("ML Logs (Wajah & Suara)")
     c_a, c_b = st.columns(2)
     c_a.write("Log Prediksi Wajah"); 
-    c_a.dataframe(st.session_state.data_face.tail(10).iloc[::-1], width='stretch')
+    c_a.dataframe(st.session_state.data_face.tail(10).iloc[::-1], use_container_width=True)
     c_b.write("Log Prediksi Suara"); 
-    c_b.dataframe(st.session_state.data_voice.tail(10).iloc[::-1], width='stretch')
+    c_b.dataframe(st.session_state.data_voice.tail(10).iloc[::-1], use_container_width=True)
 
+# Refresh otomatis
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
