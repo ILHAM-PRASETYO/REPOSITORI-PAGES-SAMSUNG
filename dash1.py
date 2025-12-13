@@ -1,4 +1,4 @@
-import streamlit as st
+15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6import streamlit as st
 import paho.mqtt.client as mqtt
 import pandas as pd
 import time
@@ -48,7 +48,9 @@ N_MFCC = 40
 # HTTP LOGIC: GOOGLE DRIVE DOWNLOADER
 # *** PASTIKAN ID DI BAWAH INI ADALAH ID FILE, BUKAN ID FOLDER ***
 # ====================================================================
+# Hanya GD_MODEL_IMAGE_ID yang didefinisikan, ID lain akan dianggap sudah ada di lokal
 GD_MODEL_IMAGE_ID = "15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6" # ID Model Wajah (Diperlukan)
+
 
 def get_confirm_token(response):
     for key, value in response.cookies.items():
@@ -65,7 +67,7 @@ def save_response_content(response, destination):
 
 def download_file_from_google_drive(id, destination):
     """Mengunduh file dari GDrive menggunakan requests."""
-    # FIX: Menggunakan URL Download GDrive yang benar
+    # Menggunakan URL download GDrive yang benar
     URL = "https://drive.google.com/drive/folders/15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6?usp=sharing" 
     session = requests.Session()
     response = session.get(URL, params = { 'id' : id }, stream = True)
@@ -78,19 +80,30 @@ def download_file_from_google_drive(id, destination):
     save_response_content(response, destination)    
 
 def download_models_from_gdrive():
-    """Mengunduh file model dari Google Drive jika belum ada, dan mencatat log."""
+    """Mengunduh file model yang diperlukan dari Google Drive jika belum ada."""
     global DOWNLOAD_LOGS
     
+    # --- PERBAIKAN: HANYA DAFTARKAN FILE YANG MEMILIKI ID GDrive VALID ---
     files_to_download = [
-        (GD_MODEL_IMAGE_ID, 'image_model.pkl')
+        # Hanya model wajah yang ID-nya sudah pasti ada/diberikan
+        (GD_MODEL_IMAGE_ID, 'image_model.pkl'),
     ]
     
+    # --- Tambahkan file model/scaler lain yang DIASUMSIKAN SUDAH ADA LOKAL (sesuai permintaan) ---
+    # File-file ini akan melewati proses download jika sudah ada (os.path.exists)
+    local_files_check = [
+        'image_scaler.pkl',
+        'audio_model.pkl',
+        'audio_scaler.pkl'
+    ]
+    
+    for filename in local_files_check:
+        if os.path.exists(filename):
+            DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada di lokal, melewati download."))
+    
+    # Proses download file yang ID-nya tersedia
     for file_id, filename in files_to_download:
         if not os.path.exists(filename):
-            if file_id in ["ID_SCALER_GAMBAR_GANTI_INI", "ID_MODEL_SUARA_GANTI_INI", "ID_SCALER_SUARA_GANTI_INI"]:
-                DOWNLOAD_LOGS.append(("warning", f"⚠️ ID GDrive untuk {filename} belum diganti. Melewatkan download."))
-                continue 
-            
             try:
                 DOWNLOAD_LOGS.append(("info", f"📥 Mencoba mengunduh {filename} dari GDrive..."))
                 download_file_from_google_drive(file_id, filename) 
@@ -485,13 +498,15 @@ with tab1:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             st.plotly_chart(fig, width='stretch')
+            
         else:
             st.info("Menunggu data sensor untuk membuat grafik...")
 
     with col2:
         st.subheader("📸 Media & Kontrol")
-        #  
+        
         st.image(st.session_state.photo_url, caption="Foto dari Kamera Terakhir", width='stretch')
+        
         
         c1, c2, c3 = st.columns(3)
         if c1.button("📷 FOTO", help="Memicu ESP32 untuk mengambil foto", width='stretch'): mqtt_client.publish(TOPIC_CAM_TRIGGER, "capture")
@@ -504,12 +519,13 @@ with tab1:
         
         st.markdown("---")
         st.write("🔊 Audio Terakhir:")
-        # 
-
-#[Image of an audio waveform]
- 
+        
         if st.session_state.audio_url:
             st.audio(st.session_state.audio_url, format='audio/wav')
+            
+
+[Image of an audio waveform]
+
         else:
             st.info("Menunggu link audio dari ESP32...")
 
@@ -528,7 +544,3 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
-
-
-
-
