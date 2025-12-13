@@ -109,7 +109,7 @@ is_online = st.session_state.mqtt_client and st.session_state.mqtt_connected
 
 # --- PERBAIKAN: Tambahkan tombol reconnect manual ---
 if not is_online:
-    if st.button("🔄 Coba Hubungkan Ulang"):
+    if st.button("🔄 Coba Hubungkan Ulang", key="reconnect_mqtt_btn"):
         print("Memaksa reconnect MQTT...")
         if st.session_state.mqtt_client:
             try:
@@ -553,6 +553,7 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
 
