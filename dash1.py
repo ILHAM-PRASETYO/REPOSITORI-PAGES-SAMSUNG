@@ -1,559 +1,339 @@
 import streamlit as st
-import paho.mqtt.client as mqtt
 import pandas as pd
+import numpy as np
 import time
-from datetime import datetime
-import os
 import queue
-import json
+import threading
+from datetime import datetime, timezone, timedelta
+import plotly.graph_objs as go
+import paho.mqtt.client as mqtt
+import json  # Kita tambahkan json untuk parsing payload brankas
 
-# ... (inisialisasi konstanta dan session state lainnya di atas)
-
-# ====================================================================
-# BAGIAN 1: INISIALISASI SESSION STATE (Pastikan ini ada)
-# ====================================================================
-
-if 'mqtt_internal_queue' not in st.session_state: 
-    st.session_state.mqtt_internal_queue = queue.Queue()
-
-if 'data_brankas' not in st.session_state:
-    st.session_state.data_brankas = pd.DataFrame(columns=["Timestamp", "Status Brankas", "Jarak (cm)", "PIR", "Prediksi Wajah", "Prediksi Suara", "Label Prediksi"])
-    
-if 'data_face' not in st.session_state:
-    st.session_state.data_face = pd.DataFrame(columns=["Timestamp", "Hasil Prediksi", "Status", "Keterangan"])
-    
-if 'data_voice' not in st.session_state:
-    st.session_state.data_voice = pd.DataFrame(columns=["Timestamp", "Hasil Prediksi", "Status", "Keterangan"])
-    
-if 'photo_url' not in st.session_state: st.session_state.photo_url = "https://via.placeholder.com/640x480?text=Menunggu+Foto"
-if 'audio_url' not in st.session_state: st.session_state.audio_url = None
-if 'last_refresh' not in st.session_state: st.session_state.last_refresh = time.time()
-if 'mqtt_connected' not in st.session_state: st.session_state.mqtt_connected = False
-if 'mqtt_client' not in st.session_state: st.session_state.mqtt_client = None
-
-# ====================================================================
-# KONSTANTA MQTT (Pastikan ini didefinisikan)
-# ====================================================================
-MQTT_BROKER = "broker.emqx.io" 
+# ---------------------------
+# Config (Diubah untuk Brankas)
+# ---------------------------
+MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
-TOPIC_BRANKAS = "data/status/kontrol"
-TOPIC_FACE_RESULT = "ai/face/result"
-TOPIC_VOICE_RESULT = "ai/voice/result"
-TOPIC_CAM_URL = "iot/camera/photo"
+# Topik brankas
+TOPIC_BRANKAS_SENSOR = "data/status/kontrol"# Topik ML
+TOPIC_ML_FACE = "ai/face/result"
+TOPIC_ML_VOICE = "ai/voice/result"
+TOPIC_ML_FACE_CONF = "ai/face/confidence"  # Tambahkan topik untuk confidence wajah
+TOPIC_ML_VOICE_CONF = "ai/voice/confidence"  # Tambahkan topik untuk confidence suara
+# Topik Media
+TOPIC_CAM_URL = "/iot/camera/photo"
 TOPIC_AUDIO_LINK = "data/audio/link"
-TOPIC_ALARM = "data/Allert/kontrol"
-TOPIC_CAM_TRIGGER = "data/cam/trigger"
-TOPIC_REC_TRIGGER = "data/mic/trigger"
+# Topik Kontrol
+TOPIC_ALARM_CONTROL = "data/alarm/kontrol"
+TOPIC_CAM_TRIGGER = "/iot/camera/trigger"
 
-# ====================================================================
-# BAGIAN 3: LOGIKA MQTT (Tanpa Cache)
-# ====================================================================
+# timezone GMT+7 helper
+TZ = timezone(timedelta(hours=7))
+def now_str():
+    return datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-def on_connect(client, userdata, flags, rc, properties=None):
-    if rc == 0:
-        st.session_state.mqtt_connected = True
-        print("MQTT Connected")
+# ---------------------------
+# module-level queue used by MQTT thread
+# ---------------------------
+GLOBAL_MQ = queue.Queue()
+
+# ---------------------------
+# Streamlit page setup (UI Brankas)
+# ---------------------------
+st.set_page_config(page_title="🔒 Dashboard Brankas Realtime", layout="wide")
+st.title("🔒 Dashboard Monitoring & Keamanan Brankas Realtime")
+
+# ---------------------------
+# session_state init
+# ---------------------------
+if "msg_queue" not in st.session_state:
+    st.session_state.msg_queue = GLOBAL_MQ
+
+if "log_brankas" not in st.session_state:
+    # Kolom baru: Prediksi Wajah, Confidence Wajah, Prediksi Suara, Confidence Suara
+    st.session_state.log_brankas = pd.DataFrame(columns=[
+        "ts", "Status Brankas", "Jarak (cm)", "PIR", 
+        "Prediksi Wajah", "Confidence Wajah (%)", 
+        "Prediksi Suara", "Confidence Suara (%)", 
+        "Label Prediksi"
+    ])
+
+if "last_status" not in st.session_state:
+    st.session_state.last_status = None
+if "last_brankas" not in st.session_state:
+    st.session_state.last_brankas = None
+
+if "mqtt_thread_started" not in st.session_state:
+    st.session_state.mqtt_thread_started = False
+
+if "photo_url" not in st.session_state:
+    st.session_state.photo_url = "https://via.placeholder.com/640x480?text=Menunggu+Foto"
+if "audio_url" not in st.session_state:
+    st.session_state.audio_url = None
+
+# ---------------------------
+# MQTT callbacks
+# ---------------------------
+def _on_connect(client, userdata, flags, rc):
+    try:
+        # Subscribe ke semua topik brankas dan ML (termasuk confidence)
         client.subscribe([
-            (TOPIC_BRANKAS, 0),
-            (TOPIC_FACE_RESULT, 0),
-            (TOPIC_VOICE_RESULT, 0),
+            (TOPIC_BRANKAS_SENSOR, 0),
+            (TOPIC_ML_FACE, 0),
+            (TOPIC_ML_VOICE, 0),
+            (TOPIC_ML_FACE_CONF, 0), # Tambahkan
+            (TOPIC_ML_VOICE_CONF, 0), # Tambahkan
             (TOPIC_CAM_URL, 0),
             (TOPIC_AUDIO_LINK, 0),
         ])
+    except Exception:
+        pass
+    GLOBAL_MQ.put({"_type": "status", "connected": (rc == 0), "ts": time.time()})
+
+def _on_message(client, userdata, msg):
+    topic = msg.topic
+    payload = msg.payload.decode(errors="ignore")
+
+    # Jika topik adalah sensor brankas (harus JSON)
+    if topic == TOPIC_BRANKAS_SENSOR:
+        try:
+            data = json.loads(payload)
+            GLOBAL_MQ.put({"_type": "brankas_sensor", "data": data, "topic": topic, "ts": time.time()})
+        except json.JSONDecodeError:
+            # Jika bukan JSON, log sebagai raw
+            GLOBAL_MQ.put({"_type": "raw", "payload": payload, "topic": topic, "ts": time.time()})
+    # Jika topik adalah hasil ML atau confidence
+    elif topic in [TOPIC_ML_FACE, TOPIC_ML_VOICE, TOPIC_ML_FACE_CONF, TOPIC_ML_VOICE_CONF]:
+        GLOBAL_MQ.put({"_type": "ml_result", "topic": topic, "payload": payload, "ts": time.time()})
+    # Jika topik adalah URL media
+    elif topic in [TOPIC_CAM_URL, TOPIC_AUDIO_LINK]:
+        GLOBAL_MQ.put({"_type": "media_url", "topic": topic, "payload": payload, "ts": time.time()})
     else:
-        st.session_state.mqtt_connected = False
-        print(f"MQTT Connection failed with code {rc}")
-
-def on_message(client, userdata, msg, properties=None):
-    # Tambahkan pesan ke queue untuk diproses di rerun berikutnya
-    try:
-        payload_str = msg.payload.decode("utf-8")
-    except UnicodeDecodeError:
-        payload_str = str(msg.payload) # Fallback untuk payload non-string
-    message_data = {
-        'topic': msg.topic,
-        'payload': payload_str,
-        'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    st.session_state.mqtt_internal_queue.put(message_data)
-
-def get_mqtt_client():
-    """Inisialisasi klien MQTT TANPA Cache."""
-    client_id = f"StreamlitApp-{os.getpid()}-{int(time.time())}"
-    try:
-        client = mqtt.Client(
-            client_id=client_id,
-            protocol=mqtt.MQTTv311,
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2
-        )
-        client.on_connect = on_connect
-        client.on_message = on_message
-        # Coba connect
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        # Jika connect berhasil, start loop
-        client.loop_start()
-        return client
-    except Exception as e:
-        st.error(f"Gagal Connect MQTT: {e}")
-        return None
-
-# --- PERBAIKAN: Jangan gunakan cache resource ---
-# Inisialisasi MQTT Client di session state untuk persistensi
-# Hanya inisialisasi jika belum ada dan status bukan connected
-if st.session_state.mqtt_client is None:
-    print("Mencoba inisialisasi MQTT Client...")
-    st.session_state.mqtt_client = get_mqtt_client()
-
-# Ambil status koneksi dari session state
-is_online = st.session_state.mqtt_client and st.session_state.mqtt_connected
-
-# --- PERBAIKAN: Tambahkan tombol reconnect manual ---
-if not is_online:
-    if st.button("🔄 Coba Hubungkan Ulang", key="reconnect_mqtt_btn"):
-        print("Memaksa reconnect MQTT...")
-        if st.session_state.mqtt_client:
+        GLOBAL_MQ.put({"_type": "raw", "payload": payload, "topic": topic, "ts": time.time()})
+# ---------------------------
+# Start MQTT thread
+# ---------------------------
+def start_mqtt_thread_once():
+    def worker():
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        client.on_connect = _on_connect
+        client.on_message = _on_message
+        while True:
             try:
-                st.session_state.mqtt_client.loop_stop()
-                st.session_state.mqtt_client.disconnect()
-            except:
-                pass  # Jika gagal disconnect, lanjutkan
-        # Reset status
-        st.session_state.mqtt_connected = False
-        st.session_state.mqtt_client = get_mqtt_client()
-        # Refresh halaman agar status update
-        st.rerun()
+                client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+                client.loop_forever()
+            except Exception as e:
+                GLOBAL_MQ.put({"_type": "error", "msg": f"MQTT worker error: {e}", "ts": time.time()})
+                time.sleep(5)
 
-# ... (sisa kode Anda, termasuk process_queue_and_logic, UI, dll) 
+    if not st.session_state.mqtt_thread_started:
+        t = threading.Thread(target=worker, daemon=True, name="mqtt_worker")
+        t.start()
+        st.session_state.mqtt_thread_started = True
+        time.sleep(0.05)
 
-# ====================================================================
-# BAGIAN 1: INISIALISASI SESSION STATE
-# ====================================================================
+start_mqtt_thread_once()
 
-if 'mqtt_internal_queue' not in st.session_state: 
-    st.session_state.mqtt_internal_queue = queue.Queue()
+# ---------------------------
+# Drain queue & process messages
+# ---------------------------
+def process_queue():
+    updated = False
+    q = st.session_state.msg_queue
+    while not q.empty():
+        item = q.get()
+        ttype = item.get("_type")
 
-if 'data_brankas' not in st.session_state:
-    st.session_state.data_brankas = pd.DataFrame(columns=["Timestamp", "Status Brankas", "Jarak (cm)", "PIR", "Prediksi Wajah", "Prediksi Suara", "Label Prediksi"])
-    
-if 'data_face' not in st.session_state:
-    st.session_state.data_face = pd.DataFrame(columns=["Timestamp", "Hasil Prediksi", "Status", "Keterangan"])
-    
-if 'data_voice' not in st.session_state:
-    st.session_state.data_voice = pd.DataFrame(columns=["Timestamp", "Hasil Prediksi", "Status", "Keterangan"])
-    
-if 'photo_url' not in st.session_state: st.session_state.photo_url = "https://via.placeholder.com/640x480?text=Menunggu+Foto"
-if 'audio_url' not in st.session_state: st.session_state.audio_url = None
-if 'last_refresh' not in st.session_state: st.session_state.last_refresh = time.time()
-# Tambahkan variabel untuk status koneksi
-if 'mqtt_connected' not in st.session_state: st.session_state.mqtt_connected = False
+        if ttype == "status":
+            st.session_state.last_status = item.get("connected", False)
+            updated = True
+        elif ttype == "error":
+            st.error(item.get("msg"))
+            updated = True
+        elif ttype == "brankas_sensor":
+            d = item.get("data", {})
+            # Ambil data dari JSON
+            status_val = d.get("status_val", "Unknown")
+            jarak_val = d.get("jarak_val", np.nan)
+            pir_val = d.get("pir_val", np.nan)
 
-# ====================================================================
-# BAGIAN 2: FUNGSI MACHINE LEARNING
-# ====================================================================
+            # Buat baris log baru
+            new_row = {
+                "ts": datetime.fromtimestamp(item.get("ts", time.time()), TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                "Status Brankas": status_val,
+                "Jarak (cm)": jarak_val,
+                "PIR": pir_val,
+                "Prediksi Wajah": "N/A", # Default
+                "Confidence Wajah (%)": "N/A", # Default
+                "Prediksi Suara": "N/A", # Default
+                "Confidence Suara (%)": "N/A", # Default
+                "Label Prediksi": "Belum Diproses" # Default
+            }
+            # Tambahkan baris ke dataframe
+            st.session_state.log_brankas = pd.concat([
+                st.session_state.log_brankas, 
+                pd.DataFrame([new_row])
+            ], ignore_index=True)
+            # Update last
+            st.session_state.last_brankas = new_row
+            updated = True
 
-@st.cache_resource
-def load_ml_models():
-    models = {}
-    load_status = {"face": False, "voice": False} 
-    
-    # --- LOAD MODEL WAJAH (Dari Lokal) ---
-    try:
-        with open('image_model.pkl', 'rb') as f:
-            models['face_svc'] = pickle.load(f)
-        with open('image_scaler.pkl', 'rb') as f:
-            models['face_scaler'] = pickle.load(f)
-        load_status["face"] = True
-    except Exception as e:
-        models['face_svc'] = None
-        models['face_scaler'] = None
-        st.error(f"Error load model wajah: {e}")
+        elif ttype == "ml_result":
+            topic = item.get("topic")
+            payload = item.get("payload")
+            ts = datetime.fromtimestamp(item.get("ts", time.time()), TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-    # --- LOAD MODEL SUARA (Dari Lokal) ---
-    try:
-        with open('audio_model.pkl', 'rb') as f:
-            models['voice_svc'] = pickle.load(f)
-        with open('audio_scaler.pkl', 'rb') as f:
-            models['voice_scaler'] = pickle.load(f)
-        load_status["voice"] = True
-    except Exception as e:
-        models['voice_svc'] = None
-        models['voice_scaler'] = None
-        st.error(f"Error load model suara: {e}")
+            if not st.session_state.log_brankas.empty:
+                last_idx = st.session_state.log_brankas.index[-1]
+                if topic == TOPIC_ML_FACE:
+                    st.session_state.log_brankas.at[last_idx, 'Prediksi Wajah'] = payload
+                elif topic == TOPIC_ML_VOICE:
+                    st.session_state.log_brankas.at[last_idx, 'Prediksi Suara'] = payload
+                elif topic == TOPIC_ML_FACE_CONF:
+                    try:
+                        conf_val = float(payload) * 100 # Ubah ke persen
+                        st.session_state.log_brankas.at[last_idx, 'Confidence Wajah (%)'] = f"{conf_val:.1f}%"
+                    except ValueError: pass
+                elif topic == TOPIC_ML_VOICE_CONF:
+                    try:
+                        conf_val = float(payload) * 100 # Ubah ke persen
+                        st.session_state.log_brankas.at[last_idx, 'Confidence Suara (%)'] = f"{conf_val:.1f}%"
+                    except ValueError: pass
 
-    return models, load_status
+                # Update label prediksi akhir
+                row = st.session_state.log_brankas.iloc[last_idx]
+                label = generate_final_prediction(row)
+                st.session_state.log_brankas.at[last_idx, 'Label Prediksi'] = label
 
-ml_models, ml_status = load_ml_models() 
+            updated = True
 
-# Notifikasi status model
-if ml_status["face"]:
-    st.toast("✅ Model Wajah Dimuat dari Lokal", icon="🖼️")
-else:
-    st.toast("⚠️ Gagal Memuat Model Wajah! Pastikan image_model.pkl & image_scaler.pkl ada.", icon="❌")
-    
-if ml_status["voice"]:
-    st.toast("✅ Model Suara Dimuat dari Lokal", icon="🎤")
-else:
-    st.toast("⚠️ Gagal Memuat Model Suara! Pastikan audio_model.pkl & audio_scaler.pkl ada.", icon="❌")
-
-def process_and_predict_image(image_bytes):
-    if not ml_models['face_svc']: return "Model Error", 0.0
-    try:
-        image = Image.open(BytesIO(image_bytes)).convert('L') 
-        image = image.resize((IMG_SIZE, IMG_SIZE))
-        img_array = np.array(image).flatten().reshape(1, -1)
-        
-        features_scaled = ml_models['face_scaler'].transform(img_array)
-        pred_idx = ml_models['face_svc'].predict(features_scaled)[0]
-        
-        try:
-            pred_label = CLASS_NAMES_FACE[ml_models['face_svc'].classes_.tolist().index(pred_idx)]
-        except:
-             pred_label = str(pred_idx)
-        
-        proba = ml_models['face_svc'].predict_proba(features_scaled)[0]
-        confidence = np.max(proba)
-        
-        return pred_label, confidence
-    except Exception as e:
-        return f"Error: {e}", 0.0
-
-def process_and_predict_audio(audio_path_or_file):
-    if not ml_models['voice_svc']: return "Model Error", 0.0
-    
-    try:
-        voice, sr = librosa.load(audio_path_or_file, sr=SAMPLE_RATE, res_type='kaiser_fast')
-        if len(voice) == 0: return "No Audio Data", 0.0
-            
-        mfccs = librosa.feature.mfcc(y=voice, sr=sr, n_mfcc=N_MFCC)
-        mfccs_processed = np.mean(mfccs.T, axis=0)
-        
-        features_scaled = ml_models['voice_scaler'].transform([mfccs_processed])
-        pred_idx = ml_models['voice_svc'].predict(features_scaled)[0]
-        
-        try:
-             pred_label = CLASS_NAMES_VOICE[ml_models['voice_svc'].classes_.tolist().index(pred_idx)]
-        except:
-             pred_label = str(pred_idx)
-        
-        proba = ml_models['voice_svc'].predict_proba(features_scaled)[0]
-        confidence = np.max(proba)
-        
-        return pred_label, confidence
-    except Exception as e:
-        return f"Error: {e}", 0.0
-
-def download_and_process_media(url, media_type, mqtt_client):
-    if not url.startswith("http"): return
-    
-    try:
-        st.toast(f'📥 Mengunduh {media_type} dari {url}...', icon='⬇️')
-        response = requests.get(url, timeout=5)
-        
-        if response.status_code == 200:
-            if media_type == "picture":
-                result, conf = process_and_predict_image(response.content)
-                mqtt_client.publish(TOPIC_FACE_RESULT, result)
-                st.toast(f'🤖 Hasil Wajah: {result} ({conf*100:.1f}%)', icon='✅')
-            elif media_type == "voice":
-                temp_filename = f"temp_voice_{int(time.time())}.wav"
-                with open(temp_filename, "wb") as f:
-                    f.write(response.content)
-                
-                result, conf = process_and_predict_audio(temp_filename)
-                mqtt_client.publish(TOPIC_VOICE_RESULT, result)
-                os.remove(temp_filename) 
-                st.toast(f"🤖 Hasil Suara: {result} ({conf*100:.1f}%)", icon='✅')
-        else:
-            st.toast(f"Gagal unduh: Status {response.status_code}", icon='⚠️')
-    except requests.exceptions.Timeout:
-        st.toast("Timeout saat mengunduh media.", icon='❌')
-    except Exception as e:
-        print(f"Error processing media: {e}")
-        st.toast(f"Error pemrosesan media: {e}", icon='❌')
-
-# ====================================================================
-# BAGIAN 3: LOGIKA MQTT (Tanpa Cache)
-# ====================================================================
-
-# Definisikan callback di luar fungsi untuk menghindari masalah referensi
-def on_connect(client, userdata, flags, rc, properties=None): # Tambahkan properties
-    if rc == 0:
-        st.session_state.mqtt_connected = True
-        print("MQTT Connected")
-        client.subscribe([
-            (TOPIC_BRANKAS, 0),
-            (TOPIC_FACE_RESULT, 0),
-            (TOPIC_VOICE_RESULT, 0),
-            (TOPIC_CAM_URL, 0),
-            (TOPIC_AUDIO_LINK, 0),
-        ])
-    else:
-        st.session_state.mqtt_connected = False
-        print(f"MQTT Connection failed with code {rc}")
-
-def on_message(client, userdata, msg, properties=None): # Tambahkan properties
-    # Tambahkan pesan ke queue untuk diproses di rerun berikutnya
-    try:
-        payload_str = msg.payload.decode("utf-8")
-    except UnicodeDecodeError:
-        payload_str = str(msg.payload) # Fallback untuk payload non-string
-    message_data = {
-        'topic': msg.topic,
-        'payload': payload_str,
-        'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    st.session_state.mqtt_internal_queue.put(message_data)
-
-def get_mqtt_client():
-    """Inisialisasi klien MQTT TANPA Cache."""
-    client_id = f"StreamlitApp-{os.getpid()}-{int(time.time())}"
-    try:
-        client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311, callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-        client.on_connect = on_connect
-        client.on_message = on_message
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.loop_start()
-        return client
-    except Exception as e:
-        st.error(f"Gagal Connect MQTT: {e}")
-        return None
-
-# Inisialisasi MQTT Client di session state untuk persistensi
-if 'mqtt_client' not in st.session_state:
-    st.session_state.mqtt_client = get_mqtt_client()
-
-# Ambil status koneksi dari session state
-is_online = st.session_state.mqtt_client and st.session_state.mqtt_connected
-
-# ====================================================================
-# BAGIAN 4: PROSES ANTRIAN DATA (FUNGSI UTAMA)
-# ====================================================================
-def process_queue_and_logic():
-    internal_queue = st.session_state.mqtt_internal_queue
-    messages = []
-    data_updated = False
-
-    while not internal_queue.empty():
-        try:
-             messages.append(internal_queue.get_nowait()) 
-             data_updated = True 
-        except queue.Empty:
-             break
-
-    if not messages: return False 
-
-    # Ambil klien dari session state
-    client = st.session_state.mqtt_client
-
-    for msg in messages:
-        topic = msg['topic']
-        payload = msg['payload']
-        timestamp = msg['time']
-        
-        # --- LOGIKA UTAMA: PARSING JSON DARI TOPIC_BRANKAS ---
-        if topic == TOPIC_BRANKAS: 
-            try:
-                data_json = json.loads(payload)
-                
-                status_val = data_json.get("status_val", "Unknown") 
-                jarak_val = float(data_json.get("jarak_val", np.nan)) 
-                pir_val = int(data_json.get("pir_val", np.nan)) 
-
-                new_row = {
-                    "Timestamp": timestamp, 
-                    "Status Brankas": status_val, 
-                    "Jarak (cm)": jarak_val, 
-                    "PIR": pir_val, 
-                    "Prediksi Wajah": "PENDING",
-                    "Prediksi Suara": "PENDING",
-                    "Label Prediksi": "Belum Diproses"
-                }
-                
-                st.session_state.data_brankas = pd.concat(
-                    [st.session_state.data_brankas, pd.DataFrame([new_row])], 
-                    ignore_index=True
-                )
-                data_updated = True
-                
-            except json.JSONDecodeError:
-                new_row = {
-                    "Timestamp": timestamp, 
-                    "Status Brankas": payload,
-                    "Jarak (cm)": np.nan, 
-                    "PIR": np.nan, 
-                    "Prediksi Wajah": "PENDING", 
-                    "Prediksi Suara": "PENDING",
-                    "Label Prediksi": "Format Salah"
-                }
-                st.session_state.data_brankas = pd.concat([st.session_state.data_brankas, pd.DataFrame([new_row])], ignore_index=True)
-                data_updated = True
-
-        # --- LOGIKA MEDIA & HASIL ML (UPDATE BARIS TERAKHIR) ---
-        elif not st.session_state.data_brankas.empty:
-            last_idx = st.session_state.data_brankas.index[-1]
-            
-            if topic == TOPIC_FACE_RESULT:
-                st.session_state.data_brankas.loc[last_idx, 'Prediksi Wajah'] = payload
-                st.session_state.data_face = pd.concat([st.session_state.data_face, pd.DataFrame([{"Timestamp": timestamp, "Hasil Prediksi": payload, "Status": "Success", "Keterangan": "MQTT"}])], ignore_index=True)
-                data_updated = True
-                
-            elif topic == TOPIC_VOICE_RESULT:
-                st.session_state.data_brankas.loc[last_idx, 'Prediksi Suara'] = payload
-                st.session_state.data_voice = pd.concat([st.session_state.data_voice, pd.DataFrame([{"Timestamp": timestamp, "Hasil Prediksi": payload, "Status": "Success", "Keterangan": "MQTT"}])], ignore_index=True)
-                data_updated = True
-
-            elif topic == TOPIC_CAM_URL:
+        elif ttype == "media_url":
+            topic = item.get("topic")
+            payload = item.get("payload")
+            if topic == TOPIC_CAM_URL:
                 st.session_state.photo_url = f"{payload}?t={int(time.time())}"
-                data_updated = True
-                download_and_process_media(payload, "picture", client)
-
             elif topic == TOPIC_AUDIO_LINK:
                 st.session_state.audio_url = f"{payload}?t={int(time.time())}"
-                data_updated = True
-                download_and_process_media(payload, "voice", client)
+            updated = True
 
-    # --- LOGIKA LABEL PREDIKSI AKHIR ---
-    if not st.session_state.data_brankas.empty:
-        def final_pred(row):
-            w = row.get("Prediksi Wajah", "PENDING")
-            s = row.get("Prediksi Suara", "PENDING")
-            
-            stt = row.get("Status Brankas", "")
-            if "Dibuka Paksa" in stt: return "🚨 DIBOBOL!"
-            
-            p = row.get("PIR", np.nan)
-            j = row.get("Jarak (cm)", np.nan)
-            
-            if pd.isna(j) or pd.isna(p) or w == "PENDING" or s == "PENDING":
-                 if stt in ["AMAN", "STANDBY", "TERKUNCI", "Brangkas Aman"]: 
-                    return "🔄 PENDING DATA" 
-                 else:
-                    return stt 
-            
-            if pd.notna(p) and p == 1: 
-                return "👀 MOTION DETECTED"
-            if pd.notna(j) and j < 5: 
-                return "⚠️ OBJECT NEAR"
-                
-            if w in ["Error", "Model Error"] or s in ["Error", "Model Error"]:
-                return "❌ ML ERROR"
-                
-            if w in ["Unknown", "OTHER_FACES"] or s in ["ANOTHER_YES", "NOT_YS", "NOISE"]: 
-                return "⚠️ REJECTED/SUSPICIOUS"
-            
-            if w in CLASS_NAMES_FACE[:4] and s == "MY_YES":
-                return "✅ ACCEPTED"
-            
-            return "✅ STANDBY"
-            
-        st.session_state.data_brankas["Label Prediksi"] = st.session_state.data_brankas.apply(final_pred, axis=1)
+    return updated
 
-    return data_updated 
+# Fungsi prediksi untuk label akhir
+def generate_final_prediction(row):
+    wajah = row.get("Prediksi Wajah", "N/A")
+    suara = row.get("Prediksi Suara", "N/A")
+    jarak = row.get("Jarak (cm)", np.nan)
+    pir = row.get("PIR", np.nan)
+    status = row.get("Status Brankas", "")
 
-# ====================================================================
-# BAGIAN 5: UI DASHBOARD (STREAMLIT) - Menggunakan 3 Tabs
-# ====================================================================
-st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
+    if "Dibuka Paksa" in status:
+        return "🚨 DIBOBOL!"
+    if wajah in ["Unknown", "OTHER_FACES"] or suara in ["ANOTHER_YES", "NOT_YS", "NOISE"]:
+        return "⚠️ MENCURIGAKAN"
+    if wajah in ["ANGGI_FACES", "DEVI_FACES", "FARIDA_FACES", "ILHAM_FACES"] and suara == "MY_YES":
+        return "✅ SAH & AMAN"
+    if pd.notna(jarak) and jarak < 5:
+        return "⚠️ OBJEK DEKAT"
+    if pd.notna(pir) and pir == 1:
+        return "👀 GERAKAN TERDETEKSI"
+    return "✅ AMAN"
 
-# Tampilkan status koneksi MQTT
-if is_online:
-    st.caption(f"Status MQTT: **Terhubung** 🟢 | Broker: {MQTT_BROKER}")
-else:
-    st.caption(f"Status MQTT: **Terputus** 🔴 | Broker: {MQTT_BROKER}")
-    # Opsional: Tampilkan tombol reconnect manual
-    if st.button("🔄 Coba Hubungkan Ulang"):
-        st.session_state.mqtt_client = get_mqtt_client()
-        st.rerun()
+# Process queue once at start
+_ = process_queue()
 
-# TAMPILKAN LOG STATUS DOWNLOAD
-if DOWNLOAD_LOGS:
-    st.subheader("📝 Log Status Model & File")
-    for log_type, message in DOWNLOAD_LOGS:
-        if log_type == "success":
-            st.success(message, icon="✅")
-        elif log_type == "warning":
-            st.warning(message, icon="⚠️")
-        elif log_type == "error":
-            st.error(message, icon="❌")
-        else:
-            st.info(message, icon="ℹ️")
-    st.markdown("---")
+# ---------------------------
+# UI Layout (Brankas Spesifik)
+# ---------------------------
 
-has_update = process_queue_and_logic()
+# Tabs untuk navigasi
+tab_overview, tab_logs, tab_media, tab_control = st.tabs(["🏠 Overview", "📋 Logs Detail", "📸 Media", "🎛️ Kontrol"])
 
-# Implementasi 3 Tabs
-tab1, tab2, tab3 = st.tabs(["Dashboard Utama", "Data Log Brankas (Raw)", "ML Logs (Wajah & Suara)"])
-
-with tab1:
+with tab_overview:
+    st.header("📊 Status & Sensor Realtime")
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        st.subheader("📡 Live Sensor Data & Log Brankas")
-        df = st.session_state.data_brankas.tail(50)
-        
-        if not df.empty and 'Jarak (cm)' in df.columns and 'PIR' in df.columns:
-            df_plot = df.set_index("Timestamp").copy()
-            df_clean = df_plot.dropna(subset=['Jarak (cm)', 'PIR'])
-            
-            # Grafik Sensor Jarak dan PIR 
+        df_plot = st.session_state.log_brankas.tail(200).copy()
+        if not df_plot.empty and {"Jarak (cm)", "PIR"}.issubset(df_plot.columns):
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_clean.index, y=df_clean["Jarak (cm)"], name="Jarak (cm)", line=dict(color='blue')))
-            fig.add_trace(go.Scatter(x=df_clean.index, y=df_clean["PIR"], name="PIR (1/0)", yaxis="y2", line=dict(color='orange', dash='dot')))
-            
+            fig.add_trace(go.Scatter(x=df_plot["ts"], y=df_plot["Jarak (cm)"], mode="lines+markers", name="Jarak (cm)"))
+            fig.add_trace(go.Scatter(x=df_plot["ts"], y=df_plot["PIR"], mode="lines+markers", name="PIR", yaxis="y2"))
             fig.update_layout(
-                height=400, 
-                yaxis=dict(title="Jarak (cm)", range=[0, 100]), 
-                yaxis2=dict(title="PIR (1=Gerak)", overlaying="y", side="right", range=[-0.1, 1.1], tickvals=[0, 1]),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                yaxis=dict(title="Jarak (cm)"),
+                yaxis2=dict(title="PIR (0=Aman, 1=Gerak)", overlaying="y", side="right", showgrid=False, range=[-0.1, 1.1]),
+                height=400
             )
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Menunggu data sensor untuk membuat grafik...")
+            st.info("Menunggu data sensor (Jarak/PIR) untuk grafik...")
 
     with col2:
-        st.subheader("📸 Media & Kontrol")
-        
-        st.image(st.session_state.photo_url, caption="Foto dari Kamera Terakhir", width='stretch')
-        
-        c1, c2, c3 = st.columns(3)
-        if c1.button("📷 FOTO", help="Memicu ESP32 untuk mengambil foto", width='stretch') and is_online:
-            st.session_state.mqtt_client.publish(TOPIC_CAM_TRIGGER, "capture")
-        if c2.button("🎤 VOICE", help="Memicu ESP32 untuk merekam/kirim audio", width='stretch') and is_online:
-            st.session_state.mqtt_client.publish(TOPIC_REC_TRIGGER, "trigger")
-        if c3.button("🔇 OFF ALARM", help="Mematikan Alarm/Buzzer", width='stretch') and is_online:
-            st.session_state.mqtt_client.publish(TOPIC_ALARM, "OFF")
-
-        col_reset, col_kontroll = st.columns(2)
-        if col_reset.button("🔄 RESET", help="Reset/Clear Status di ESP32", width='stretch') and is_online:
-            st.session_state.mqtt_client.publish(TOPIC_BRANKAS, "RESET")
-        if col_kontroll.button("OPEN", help="Memicu Open", width='stretch') and is_online:
-            st.session_state.mqtt_client.publish(TOPIC_BRANKAS, "OPEN")
-        
-        st.markdown("---")
-        st.write("🔊 Audio Terakhir:")
-        
-        if st.session_state.audio_url:
-            st.audio(st.session_state.audio_url, format='audio/wav')
+        st.subheader("Status Terakhir")
+        if st.session_state.last_brankas:
+            last = st.session_state.last_brankas
+            st.metric("Status", last.get("Status Brankas"))
+            st.metric("Jarak", f"{last.get('Jarak (cm)')} cm", delta=None)
+            st.metric("PIR", last.get("PIR"))
+            st.metric("Wajah", last.get("Prediksi Wajah"))
+            st.metric("Suara", last.get("Prediksi Suara"))
+            st.metric("Label Akhir", last.get("Label Prediksi"))
         else:
-            st.info("Menunggu link audio dari ESP32...")
+            st.info("Menunggu data...")
 
-with tab2: 
-    st.subheader("Data Log Brankas (Raw)")
-    st.dataframe(st.session_state.data_brankas.iloc[::-1], width='stretch')
-
-with tab3:
-    st.subheader("ML Logs (Wajah & Suara)")
-    c_a, c_b = st.columns(2)
-    c_a.write("Log Prediksi Wajah"); 
-    c_a.dataframe(st.session_state.data_face.tail(10).iloc[::-1], width='stretch')
-    c_b.write("Log Prediksi Suara"); 
-    c_b.dataframe(st.session_state.data_voice.tail(10).iloc[::-1], width='stretch')
-
-# Refresh otomatis
-if has_update or (time.time() - st.session_state.last_refresh > 3):
-    st.session_state.last_refresh = time.time()
-    st.rerun()
+        st.subheader("Status Koneksi")
+        connected = st.session_state.last_status
+        st.metric("MQTT", "🟢 Terhubung" if connected else "🔴 Terputus", delta=None)
 
 
+with tab_logs:
+    st.subheader("📋 Log Status Brankas (Termasuk ML)")
+    # Tampilkan semua kolom
+    st.dataframe(st.session_state.log_brankas.iloc[::-1], use_container_width=True)
 
 
+with tab_media:
+    st.subheader("📸 Foto Terbaru")
+    st.image(st.session_state.photo_url, caption="Foto dari Kamera", use_column_width=True)
+
+    st.subheader("🔊 Audio Terbaru")
+    if st.session_state.audio_url:
+        st.audio(st.session_state.audio_url, format='audio/wav')
+    else:
+        st.info("Menunggu rekaman audio...")
+
+
+with tab_control:
+    st.subheader("Kontrol Brankas")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📷 Ambil Foto Sekarang"):
+            try:
+                pubc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+                pubc.connect(MQTT_BROKER, MQTT_PORT, 60)
+                pubc.publish(TOPIC_CAM_TRIGGER, "capture")
+                pubc.disconnect()
+                st.success("Perintah ambil foto dikirim.")
+            except Exception as e:
+                st.error(f"Gagal kirim perintah: {e}")
+    with col2:
+        if st.button("🔇 Matikan Alarm"):
+            try:
+                pubc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+                pubc.connect(MQTT_BROKER, MQTT_PORT, 60)
+                pubc.publish(TOPIC_ALARM_CONTROL, "OFF")
+                pubc.disconnect()
+                st.success("Perintah matikan alarm dikirim.")
+            except Exception as e:
+                st.error(f"Gagal kirim perintah: {e}")
+
+    st.subheader("Download Log")
+    if st.button("📥 Download Semua Log Brankas (CSV)"):
+        if not st.session_state.log_brankas.empty:
+            csv = st.session_state.log_brankas.to_csv(index=False).encode("utf-8")
+            st.download_button("Klik untuk Download", data=csv, file_name=f"brankas_full_logs_{int(time.time())}.csv")
+        else:
+            st.info("No logs to download")
+
+
+# Process queue after UI render
+process_queue()
