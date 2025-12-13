@@ -68,7 +68,7 @@ def save_response_content(response, destination):
 def download_file_from_google_drive(id, destination):
     """Mengunduh file dari GDrive menggunakan requests."""
     # MENGUBAH URL DARI URL FOLDER KE URL FILE DOWNLOAD YANG BENAR
-    URL = "https://drive.google.com/drive/folders/15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6?export=download" 
+    URL = "https://drive.google.com/file/d/1Epf5JGhc0fxMzGttRgclbMEOJ1E2MV2h/view?usp=sharing" 
     session = requests.Session()
     response = session.get(URL, params = { 'id' : id }, stream = True)
     token = get_confirm_token(response)
@@ -542,3 +542,4 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
