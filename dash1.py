@@ -262,91 +262,11 @@ def download_and_process_media(url, media_type, mqtt_client):
 # BAGIAN 3: LOGIKA MQTT & CACHING
 # ====================================================================
 
-def on_connect(client, userdata, flags, rc, properties=None):
-    """Dipanggil ketika klien berhasil terhubung ke broker."""
-    if rc == 0:
-        result, mid = client.subscribe([ 
-            (TOPIC_BRANKAS, 0), 
-            (TOPIC_FACE_RESULT, 0), 
-            (TOPIC_VOICE_RESULT, 0), 
-            (TOPIC_CAM_URL, 0), 
-            (TOPIC_AUDIO_LINK, 0)
-        ])
-        if result != 0 :
-            print(f'❌ MQTT Subscription Error Code: {result}')
-        else :
-            print('✅ MQTT Connected (Subscribed)')
-    else:
-        print(f'❌ MQTT Connection Failed with code: {rc}.')
-
-def on_disconnect(client, userdata, rc):
-    """
-    Dipanggil ketika koneksi terputus.
-    PENTING: Kita harus menghapus cache agar UI Streamlit tahu koneksi putus.
-    """
-    if rc != 0:
-        print(f"⚠️ MQTT Unexpected Disconnection. Code: {rc}")
-        try:
-            # 💡 INI KUNCINYA: Paksa hapus cache resource saat putus koneksi
-            get_mqtt_client_cached.clear()
-        except Exception as e:
-            print(f"Error clearing cache: {e}")
-    else:
-        print("ℹ️ MQTT Disconnected cleanly.")
-
-def on_message(client, userdata, msg):
-    internal_queue = userdata 
-    try:
-        payload = msg.payload.decode("utf-8").strip()
-        internal_queue.put({
-            "topic": msg.topic, 
-            "payload": payload, 
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S") 
-        })
-    except: 
-        pass
-
-@st.cache_resource
-def get_mqtt_client_cached():
-    # Buat Client ID unik
-    client_id = f"StreamlitApp-{os.getpid()}-{int(time.time())}"
-    
-    try:
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
-        
-        client.on_connect = on_connect
-        client.on_message = on_message
-        client.on_disconnect = on_disconnect
-        client.user_data_set(st.session_state.mqtt_internal_queue) 
-        
-        # Coba koneksi
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.loop_start()
-        
-        # 💡 PERBAIKAN: Tunggu sebentar untuk memastikan status .is_connected() valid
-        # Kita beri waktu max 3 detik untuk handshake
-        wait_start = time.time()
-        while not client.is_connected() and (time.time() - wait_start < 3):
-            time.sleep(0.1)
-
-        # Jika setelah 3 detik masih belum connect, anggap gagal
-        if not client.is_connected():
-            print("❌ Gagal mendapatkan status Connected dalam 3 detik.")
-            client.loop_stop()
-            # Jangan return client, tapi biarkan None atau hapus cache
-            get_mqtt_client_cached.clear()
-            return None
-
-        return client
-    except Exception as e:
-        print(f"❌ Gagal Connect MQTT (Fatal Error): {e}")
-        # Hapus cache jika error fatal
-        try:
-            get_mqtt_client_cached.clear()
-        except:
-            pass
-        return None
-# ====================================================================
+if mqtt_client is None:
+    connected = False
+else:
+    # Cek status asli dari library Paho
+    connected = mqtt_client.is_connected()# ====================================================================
 # BAGIAN 4: PROSES ANTRIAN DATA (FUNGSI UTAMA)
 # ====================================================================
 def process_queue_and_logic():
@@ -476,16 +396,21 @@ def process_queue_and_logic():
 st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
 mqtt_client = get_mqtt_client_cached()
-if not mqtt_client: st.stop() 
+
+if not mqtt_client: 
+    st.error("Gagal inisialisasi Client MQTT")
+    st.stop()
 
 # LOGIKA UTAMA STATUS UPDATE: Menggunakan .is_connected()
-connected = mqtt_client.is_connected() 
-if mqtt_client is None:
-    connected = False
+is_online = getattr(mqtt_client, 'status_terhubung', False)
+if is_online:
+    st.caption(f"Status MQTT: **Terhubung** 🟢 | Broker: {MQTT_BROKER}")
 else:
-    # Cek status asli dari library Paho
-    connected = mqtt_client.is_connected()
-st.caption(f"Status MQTT: {'Terhubung 🟢' if connected else 'Terputus 🔴'} | Broker: {MQTT_BROKER}")
+    st.caption(f"Status MQTT: **Terputus** 🔴 | Broker: {MQTT_BROKER}")
+    # Opsional: Tampilkan tombol reconnect manual
+    if st.button("🔄 Coba Hubungkan Ulang"):
+        st.cache_resource.clear()
+        st.rerun()
 
 # TAMPILKAN LOG STATUS DOWNLOAD
 if DOWNLOAD_LOGS:
@@ -569,6 +494,7 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
 
