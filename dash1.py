@@ -6,7 +6,7 @@ from datetime import datetime
 import os
 import plotly.graph_objects as go
 import numpy as np
-import requests # Digunakan untuk HTTP Logic dan GDrive Download
+import requests
 import pickle
 from PIL import Image
 import queue
@@ -14,28 +14,30 @@ import librosa
 from io import BytesIO
 import json 
 
+# Global variable to store download messages (Untuk ditampilkan di UI)
+DOWNLOAD_LOGS = []
+
 # ====================================================================
 # KONFIGURASI HALAMAN & LAYOUT
 # ====================================================================
-# Mengikuti format layout wide
 st.set_page_config(layout="wide", page_title="🛡️ Sistem Keamanan Brankas Terpadu")
 
 # ====================================================================
-# KONFIGURASI KONSTANTA & TOPIK MQTT (Modifikasi Input/Output Brankas)
+# KONFIGURASI KONSTANTA & TOPIK MQTT
 # ====================================================================
 MQTT_BROKER = "test.mosquitto.org" 
 MQTT_PORT = 1883
 
-TOPIC_BRANKAS = "data/status/kontrol"        # Input Sensor JSON (Status, Jarak, PIR)
-TOPIC_FACE_RESULT = "ai/face/result"       # Output Prediksi Wajah
-TOPIC_VOICE_RESULT = "ai/voice/result"     # Output Prediksi Suara
-TOPIC_CAM_URL = "iot/camera/photo"         # Input URL Foto
-TOPIC_AUDIO_LINK = "data/audio/link"       # Input URL Audio
-TOPIC_ALARM = "data/Allert/kontrol"        # Output Kontrol Alarm
-TOPIC_CAM_TRIGGER = "data/cam/capture"     # Output Trigger Kamera
-TOPIC_REC_TRIGGER = "data/mic/trigger"     # Output Trigger Mic
+TOPIC_BRANKAS = "data/status/kontrol"        
+TOPIC_FACE_RESULT = "ai/face/result"       
+TOPIC_VOICE_RESULT = "ai/voice/result"     
+TOPIC_CAM_URL = "iot/camera/photo"         
+TOPIC_AUDIO_LINK = "data/audio/link"       
+TOPIC_ALARM = "data/Allert/kontrol"        
+TOPIC_CAM_TRIGGER = "data/cam/capture"     
+TOPIC_REC_TRIGGER = "data/mic/trigger"     
 
-# Konfigurasi ML (Sesuai snippet predict_picture dan predict_voice)
+# Konfigurasi ML
 IMG_SIZE = 96
 CLASS_NAMES_FACE = ['ANGGI_FACES', 'DEVI_FACES', 'FARIDA_FACES', 'ILHAM_FACES', 'OTHER_FACES']
 CLASS_NAMES_VOICE = ['MY_YES','ANOTHER_YES','NOT_YS','NOISE']
@@ -43,10 +45,10 @@ SAMPLE_RATE = 16000
 N_MFCC = 40
 
 # ====================================================================
-# HTTP LOGIC: GOOGLE DRIVE DOWNLOADER (Menggantikan gdown)
+# HTTP LOGIC: GOOGLE DRIVE DOWNLOADER
+# *** PASTIKAN ID DI BAWAH INI ADALAH ID FILE, BUKAN ID FOLDER ***
 # ====================================================================
-# *** GANTI ID FILE DI BAWAH INI DENGAN ID MODEL ANDA SENDIRI ***
-GD_MODEL_IMAGE_ID = "15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6" 
+GD_MODEL_IMAGE_ID = "15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6" # ID Model Wajah (Diperlukan)
 
 def get_confirm_token(response):
     for key, value in response.cookies.items():
@@ -58,12 +60,13 @@ def save_response_content(response, destination):
     CHUNK_SIZE = 32768
     with open(destination, "wb") as f:
         for chunk in response.iter_content(CHUNK_SIZE):
-            if chunk: # filter out keep-alive new chunks
+            if chunk: 
                 f.write(chunk)
 
 def download_file_from_google_drive(id, destination):
     """Mengunduh file dari GDrive menggunakan requests."""
-    URL = "https://drive.google.com/drive/folders/15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6?usp=sharing"
+    # FIX: Menggunakan URL Download GDrive yang benar
+    URL = "https://drive.google.com/drive/folders/15N2HvWMOZG-eg8C-tGK7Rk86NEvFRAg6?usp=sharing" 
     session = requests.Session()
     response = session.get(URL, params = { 'id' : id }, stream = True)
     token = get_confirm_token(response)
@@ -75,32 +78,40 @@ def download_file_from_google_drive(id, destination):
     save_response_content(response, destination)    
 
 def download_models_from_gdrive():
-    """Mengunduh file model dari Google Drive jika belum ada."""
+    """Mengunduh file model dari Google Drive jika belum ada, dan mencatat log."""
+    global DOWNLOAD_LOGS
     
     files_to_download = [
-        (GD_MODEL_IMAGE_ID, 'image_model.pkl')
+        (GD_MODEL_IMAGE_ID, 'image_model.pkl'),
+        (GD_SCALER_IMAGE_ID, 'image_scaler.pkl'),
+        (GD_MODEL_VOICE_ID, 'audio_model.pkl'),
+        (GD_SCALER_VOICE_ID, 'audio_scaler.pkl')
     ]
     
     for file_id, filename in files_to_download:
         if not os.path.exists(filename):
             if file_id in ["ID_SCALER_GAMBAR_GANTI_INI", "ID_MODEL_SUARA_GANTI_INI", "ID_SCALER_SUARA_GANTI_INI"]:
-                print(f"⚠️ PERINGATAN: ID GDrive untuk {filename} belum diganti. Melewatkan download.")
+                DOWNLOAD_LOGS.append(("warning", f"⚠️ ID GDrive untuk {filename} belum diganti. Melewatkan download."))
                 continue 
             
             try:
-                print(f"Mengunduh {filename} dari GDrive...")
+                DOWNLOAD_LOGS.append(("info", f"📥 Mencoba mengunduh {filename} dari GDrive..."))
                 download_file_from_google_drive(file_id, filename) 
-                print(f"✅ {filename} berhasil diunduh.")
+                DOWNLOAD_LOGS.append(("success", f"✅ {filename} berhasil diunduh."))
             except Exception as e:
-                print(f"❌ Gagal mengunduh {filename}. Pastikan ID benar dan file PUBLIC. Error: {e}")
+                DOWNLOAD_LOGS.append(("error", f"❌ Gagal mengunduh {filename}. Pastikan ID benar dan file PUBLIC. Error: {e}"))
+        else:
+             DOWNLOAD_LOGS.append(("info", f"📁 {filename} sudah ada di lokal, melewati download."))
                 
-# JALANKAN DOWNLOAD SEBELUM CACHE MODEL
 download_models_from_gdrive() 
 
 
 # ====================================================================
-# BAGIAN 1: INISIALISASI SESSION STATE (Sesuai format sebelumnya)
+# BAGIAN 1: INISIALISASI SESSION STATE
 # ====================================================================
+# Inisialisasi 'mqtt_connected' di awal blok ini
+if 'mqtt_connected' not in st.session_state:
+    st.session_state.mqtt_connected = False
 
 if 'mqtt_internal_queue' not in st.session_state: 
     st.session_state.mqtt_internal_queue = queue.Queue()
@@ -120,7 +131,7 @@ if 'last_refresh' not in st.session_state: st.session_state.last_refresh = time.
 
 
 # ====================================================================
-# BAGIAN 2: FUNGSI MACHINE LEARNING (Modifikasi Sistem 2 ML)
+# BAGIAN 2: FUNGSI MACHINE LEARNING
 # ====================================================================
 
 @st.cache_resource
@@ -130,7 +141,6 @@ def load_ml_models():
     
     # --- LOAD MODEL WAJAH (Dari Lokal) ---
     try:
-        # Nama file di sini harus sesuai dengan yang didownload
         with open('image_model.pkl', 'rb') as f:
             models['face_svc'] = pickle.load(f)
         with open('image_scaler.pkl', 'rb') as f:
@@ -155,7 +165,7 @@ def load_ml_models():
 
 ml_models, ml_status = load_ml_models() 
 
-# Notifikasi status model
+# Notifikasi status model (diubah menjadi toast)
 if ml_status["face"]:
     st.toast("✅ Model Wajah Dimuat dari Lokal", icon="🖼️")
 else:
@@ -166,15 +176,13 @@ if ml_status["voice"]:
 else:
     st.toast("⚠️ Gagal Memuat Model Suara! Pastikan audio_model.pkl & audio_scaler.pkl ada.", icon="❌")
 
-# --- Fungsi Prediksi Wajah (Disederhanakan untuk menghindari dependency cv2) ---
 def process_and_predict_image(image_bytes):
     if not ml_models['face_svc']: return "Model Error", 0.0
     try:
-        image = Image.open(BytesIO(image_bytes)).convert('L') # Convert to grayscale
+        image = Image.open(BytesIO(image_bytes)).convert('L') 
         image = image.resize((IMG_SIZE, IMG_SIZE))
         img_array = np.array(image).flatten().reshape(1, -1)
         
-        # Scaling dan Prediksi
         features_scaled = ml_models['face_scaler'].transform(img_array)
         pred_idx = ml_models['face_svc'].predict(features_scaled)[0]
         
@@ -190,7 +198,6 @@ def process_and_predict_image(image_bytes):
     except Exception as e:
         return f"Error: {e}", 0.0
 
-# --- Fungsi Prediksi Suara ---
 def process_and_predict_audio(audio_path_or_file):
     if not ml_models['voice_svc']: return "Model Error", 0.0
     
@@ -216,7 +223,6 @@ def process_and_predict_audio(audio_path_or_file):
     except Exception as e:
         return f"Error: {e}", 0.0
 
-# --- Fungsi Download Media & Panggil Prediksi ---
 def download_and_process_media(url, media_type, mqtt_client):
     if not url.startswith("http"): return
     
@@ -247,11 +253,14 @@ def download_and_process_media(url, media_type, mqtt_client):
         st.toast(f"Error pemrosesan media: {e}", icon='❌')
 
 # ====================================================================
-# BAGIAN 3: LOGIKA MQTT & CACHING (Sesuai format sebelumnya)
+# BAGIAN 3: LOGIKA MQTT & CACHING
 # ====================================================================
+
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
-        # Subscribe ke topik yang relevan dan menangkap hasilnya (result, mid)
+        # Mengatur status koneksi di session state
+        st.session_state.mqtt_connected = True
+        
         result, mid = client.subscribe([ 
             (TOPIC_BRANKAS, 0), 
             (TOPIC_FACE_RESULT, 0), 
@@ -260,16 +269,15 @@ def on_connect(client, userdata, flags, rc, properties=None):
             (TOPIC_AUDIO_LINK, 0)
         ])
         
-        # Mengecek apakah hasil subscribe TIDAK SAMA DENGAN 0 (error)
         if result != 0 :
-            # Jika ada error saat subscribe
             print(f'❌ MQTT Inconnected (Subscription Error Code: {result})')
         else :
-            # Jika koneksi dan subscribe sukses
-            print('✅ MQTT Connected')
+            print('✅ MQTT Connected (Subscribed)')
     else:
-        # Jika koneksi awal (rc != 0) gagal
+        # Jika koneksi gagal, atur status ke False
+        st.session_state.mqtt_connected = False
         print(f'❌ MQTT Connection Failed with code: {rc}')
+
 
 def on_message(client, userdata, msg):
     internal_queue = userdata 
@@ -288,6 +296,7 @@ def get_mqtt_client_cached():
     client_id = f"StreamlitApp-{os.getpid()}-{int(time.time())}"
     try:
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id, clean_session=True)
+        
         client.on_connect = on_connect
         client.on_message = on_message
         client.user_data_set(st.session_state.mqtt_internal_queue) 
@@ -295,6 +304,8 @@ def get_mqtt_client_cached():
         client.loop_start()
         return client
     except Exception as e:
+        if 'mqtt_connected' in st.session_state:
+             st.session_state.mqtt_connected = False
         st.error(f"Gagal Connect MQTT: {e}")
         return None
 
@@ -348,7 +359,6 @@ def process_queue_and_logic():
                 data_updated = True
                 
             except json.JSONDecodeError:
-                # Fallback untuk non-JSON (jika hanya mengirim status teks)
                 new_row = {
                     "Timestamp": timestamp, 
                     "Status Brankas": payload,
@@ -378,16 +388,15 @@ def process_queue_and_logic():
             elif topic == TOPIC_CAM_URL:
                 st.session_state.photo_url = f"{payload}?t={int(time.time())}"
                 data_updated = True
-                download_and_process_media(payload, "picture", client) # Panggil proses ML Wajah
+                download_and_process_media(payload, "picture", client)
 
             elif topic == TOPIC_AUDIO_LINK:
                 st.session_state.audio_url = f"{payload}?t={int(time.time())}"
                 data_updated = True
-                download_and_process_media(payload, "voice", client) # Panggil proses ML Suara
+                download_and_process_media(payload, "voice", client)
 
     # --- LOGIKA LABEL PREDIKSI AKHIR ---
     if not st.session_state.data_brankas.empty:
-        # Terapkan logika prediksi akhir
         def final_pred(row):
             w = row.get("Prediksi Wajah", "PENDING")
             s = row.get("Prediksi Suara", "PENDING")
@@ -398,31 +407,26 @@ def process_queue_and_logic():
             p = row.get("PIR", np.nan)
             j = row.get("Jarak (cm)", np.nan)
             
-            # 1. Cek apakah ada data yang masih PENDING (ML atau Sensor)
             if pd.isna(j) or pd.isna(p) or w == "PENDING" or s == "PENDING":
                  if stt in ["AMAN", "STANDBY", "TERKUNCI", "Brangkas Aman"]: 
                     return "🔄 PENDING DATA" 
                  else:
                     return stt 
             
-            # 2. Cek Gerakan Sensor
             if pd.notna(p) and p == 1: 
                 return "👀 MOTION DETECTED"
             if pd.notna(j) and j < 5: 
                 return "⚠️ OBJECT NEAR"
                 
-            # 3. Cek Prediksi ML
             if w in ["Error", "Model Error"] or s in ["Error", "Model Error"]:
                 return "❌ ML ERROR"
                 
             if w in ["Unknown", "OTHER_FACES"] or s in ["ANOTHER_YES", "NOT_YS", "NOISE"]: 
                 return "⚠️ REJECTED/SUSPICIOUS"
             
-            # 4. ACCEPTED
             if w in CLASS_NAMES_FACE[:4] and s == "MY_YES":
                 return "✅ ACCEPTED"
             
-            # 5. Default
             return "✅ STANDBY"
             
         st.session_state.data_brankas["Label Prediksi"] = st.session_state.data_brankas.apply(final_pred, axis=1)
@@ -438,12 +442,27 @@ if not mqtt_client: st.stop()
 
 st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
-connected = st.session_state.mqtt_connected
+# FIX ERROR Attribute: MENGGUNAKAN GETATTR
+connected = getattr(st.session_state, "mqtt_connected", False)
 st.caption(f"Status MQTT: {'Terhubung 🟢' if connected else 'Terputus 🔴'} | Broker: {MQTT_BROKER}")
+
+# TAMPILKAN LOG STATUS DOWNLOAD
+if DOWNLOAD_LOGS:
+    st.subheader("📝 Log Status Model & File")
+    for log_type, message in DOWNLOAD_LOGS:
+        if log_type == "success":
+            st.success(message, icon="✅")
+        elif log_type == "warning":
+            st.warning(message, icon="⚠️")
+        elif log_type == "error":
+            st.error(message, icon="❌")
+        else:
+            st.info(message, icon="ℹ️")
+    st.markdown("---")
 
 has_update = process_queue_and_logic()
 
-# Implementasi 3 Tabs sesuai permintaan
+# Implementasi 3 Tabs
 tab1, tab2, tab3 = st.tabs(["Dashboard Utama", "Data Log Brankas (Raw)", "ML Logs (Wajah & Suara)"])
 
 with tab1:
@@ -474,6 +493,7 @@ with tab1:
 
     with col2:
         st.subheader("📸 Media & Kontrol")
+        #  
         st.image(st.session_state.photo_url, caption="Foto dari Kamera Terakhir", width='stretch')
         
         c1, c2, c3 = st.columns(3)
@@ -487,6 +507,10 @@ with tab1:
         
         st.markdown("---")
         st.write("🔊 Audio Terakhir:")
+        # 
+
+[Image of an audio waveform]
+ 
         if st.session_state.audio_url:
             st.audio(st.session_state.audio_url, format='audio/wav')
         else:
@@ -507,5 +531,3 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
-
-
