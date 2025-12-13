@@ -281,7 +281,7 @@ def download_and_process_media(url, media_type, mqtt_client):
 # ====================================================================
 
 # Definisikan callback di luar fungsi untuk menghindari masalah referensi
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, rc, properties=None): # Tambahkan properties
     if rc == 0:
         st.session_state.mqtt_connected = True
         print("MQTT Connected")
@@ -296,7 +296,7 @@ def on_connect(client, userdata, flags, rc):
         st.session_state.mqtt_connected = False
         print(f"MQTT Connection failed with code {rc}")
 
-def on_message(client, userdata, msg):
+def on_message(client, userdata, msg, properties=None): # Tambahkan properties
     # Tambahkan pesan ke queue untuk diproses di rerun berikutnya
     try:
         payload_str = msg.payload.decode("utf-8")
@@ -558,4 +558,5 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
