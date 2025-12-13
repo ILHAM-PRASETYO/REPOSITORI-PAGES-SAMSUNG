@@ -139,7 +139,7 @@ if 'last_refresh' not in st.session_state: st.session_state.last_refresh = time.
 # ====================================================================
 # BAGIAN 2: FUNGSI MACHINE LEARNING
 # ====================================================================
-mqtt_client = get_mqtt_client_cached()
+
 @st.cache_resource
 def load_ml_models():
     models = {}
@@ -258,6 +258,20 @@ def download_and_process_media(url, media_type, mqtt_client):
         print(f"Error processing media: {e}")
         st.toast(f"Error pemrosesan media: {e}", icon='❌')
 
+@st.cache_resource
+def get_mqtt_client_cached():
+    """Inisialisasi klien MQTT dengan Cache Resource agar tidak error 'Too many open files'"""
+    client_id = f"StreamlitApp-{os.getpid()}-{int(time.time())}"
+    try:
+        client = mqtt.Client(client_id=client_id, clean_session=True)
+        client.on_connect = on_connect
+        client.on_message = on_message
+        client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        client.loop_start()
+        return client
+    except Exception as e:
+        st.error(f"Gagal Connect MQTT: {e}")
+        return None
 # ====================================================================
 # BAGIAN 3: LOGIKA MQTT & CACHING
 # ====================================================================
@@ -494,6 +508,7 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
 
