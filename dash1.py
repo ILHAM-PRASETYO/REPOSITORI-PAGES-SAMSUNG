@@ -438,6 +438,9 @@ if not mqtt_client: st.stop()
 
 st.title("🛡️ Dashboard Keamanan Brankas (All-in-One)")
 
+connected = st.session_state.mqtt_connected
+st.caption(f"Status MQTT: {'Terhubung 🟢' if connected else 'Terputus 🔴'} | Broker: {MQTT_BROKER}")
+
 has_update = process_queue_and_logic()
 
 # Implementasi 3 Tabs sesuai permintaan
@@ -504,4 +507,5 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
