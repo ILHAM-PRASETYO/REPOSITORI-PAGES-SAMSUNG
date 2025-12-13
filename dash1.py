@@ -249,20 +249,27 @@ def download_and_process_media(url, media_type, mqtt_client):
 # ====================================================================
 # BAGIAN 3: LOGIKA MQTT & CACHING (Sesuai format sebelumnya)
 # ====================================================================
-
 def on_connect(client, userdata, flags, rc, properties=None):
     if rc == 0:
-        # Subscribe ke topik yang relevan (Input Brankas & Output ML/Media)
-        if(!client.subscribe([
+        # Subscribe ke topik yang relevan dan menangkap hasilnya (result, mid)
+        result, mid = client.subscribe([ 
             (TOPIC_BRANKAS, 0), 
             (TOPIC_FACE_RESULT, 0), 
             (TOPIC_VOICE_RESULT, 0), 
             (TOPIC_CAM_URL, 0), 
             (TOPIC_AUDIO_LINK, 0)
-        ])) :
-            print('❌ MQTT Inconnected')
+        ])
+        
+        # Mengecek apakah hasil subscribe TIDAK SAMA DENGAN 0 (error)
+        if result != 0 :
+            # Jika ada error saat subscribe
+            print(f'❌ MQTT Inconnected (Subscription Error Code: {result})')
         else :
+            # Jika koneksi dan subscribe sukses
             print('✅ MQTT Connected')
+    else:
+        # Jika koneksi awal (rc != 0) gagal
+        print(f'❌ MQTT Connection Failed with code: {rc}')
 
 def on_message(client, userdata, msg):
     internal_queue = userdata 
@@ -497,3 +504,4 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
