@@ -139,7 +139,7 @@ if 'last_refresh' not in st.session_state: st.session_state.last_refresh = time.
 # ====================================================================
 # BAGIAN 2: FUNGSI MACHINE LEARNING
 # ====================================================================
-
+mqtt_client = get_mqtt_client_cached()
 @st.cache_resource
 def load_ml_models():
     models = {}
@@ -494,6 +494,7 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
 
 
 
