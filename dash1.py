@@ -83,14 +83,13 @@ def download_models_from_gdrive():
     """Mengunduh file model yang diperlukan dari Google Drive jika belum ada."""
     global DOWNLOAD_LOGS
     
-    # --- PERBAIKAN: HANYA DAFTARKAN FILE YANG MEMILIKI ID GDrive VALID ---
+    # --- HANYA DAFTARKAN FILE YANG MEMILIKI ID GDrive VALID ---
     files_to_download = [
         # Hanya model wajah yang ID-nya sudah pasti ada/diberikan
         (GD_MODEL_IMAGE_ID, 'image_model.pkl'),
     ]
     
-    # --- Tambahkan file model/scaler lain yang DIASUMSIKAN SUDAH ADA LOKAL (sesuai permintaan) ---
-    # File-file ini akan melewati proses download jika sudah ada (os.path.exists)
+    # --- Tambahkan file model/scaler lain yang DIASUMSIKAN SUDAH ADA LOKAL ---
     local_files_check = [
         'image_scaler.pkl',
         'audio_model.pkl',
@@ -498,7 +497,6 @@ with tab1:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
             st.plotly_chart(fig, width='stretch')
-            
         else:
             st.info("Menunggu data sensor untuk membuat grafik...")
 
@@ -506,7 +504,6 @@ with tab1:
         st.subheader("📸 Media & Kontrol")
         
         st.image(st.session_state.photo_url, caption="Foto dari Kamera Terakhir", width='stretch')
-        
         
         c1, c2, c3 = st.columns(3)
         if c1.button("📷 FOTO", help="Memicu ESP32 untuk mengambil foto", width='stretch'): mqtt_client.publish(TOPIC_CAM_TRIGGER, "capture")
@@ -522,10 +519,6 @@ with tab1:
         
         if st.session_state.audio_url:
             st.audio(st.session_state.audio_url, format='audio/wav')
-            
-
-#[Image of an audio waveform]
-
         else:
             st.info("Menunggu link audio dari ESP32...")
 
@@ -544,5 +537,3 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
-
-
