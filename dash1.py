@@ -313,7 +313,7 @@ def get_mqtt_client():
     """Inisialisasi klien MQTT TANPA Cache."""
     client_id = f"StreamlitApp-{os.getpid()}-{int(time.time())}"
     try:
-        client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311)
+        client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311, callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
         client.on_connect = on_connect
         client.on_message = on_message
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
@@ -511,27 +511,27 @@ with tab1:
                 yaxis2=dict(title="PIR (1=Gerak)", overlaying="y", side="right", range=[-0.1, 1.1], tickvals=[0, 1]),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("Menunggu data sensor untuk membuat grafik...")
 
     with col2:
         st.subheader("📸 Media & Kontrol")
         
-        st.image(st.session_state.photo_url, caption="Foto dari Kamera Terakhir", use_container_width=True)
+        st.image(st.session_state.photo_url, caption="Foto dari Kamera Terakhir", width='stretch')
         
         c1, c2, c3 = st.columns(3)
-        if c1.button("📷 FOTO", help="Memicu ESP32 untuk mengambil foto", use_container_width=True) and is_online:
+        if c1.button("📷 FOTO", help="Memicu ESP32 untuk mengambil foto", width='stretch') and is_online:
             st.session_state.mqtt_client.publish(TOPIC_CAM_TRIGGER, "capture")
-        if c2.button("🎤 VOICE", help="Memicu ESP32 untuk merekam/kirim audio", use_container_width=True) and is_online:
+        if c2.button("🎤 VOICE", help="Memicu ESP32 untuk merekam/kirim audio", width='stretch') and is_online:
             st.session_state.mqtt_client.publish(TOPIC_REC_TRIGGER, "trigger")
-        if c3.button("🔇 OFF ALARM", help="Mematikan Alarm/Buzzer", use_container_width=True) and is_online:
+        if c3.button("🔇 OFF ALARM", help="Mematikan Alarm/Buzzer", width='stretch') and is_online:
             st.session_state.mqtt_client.publish(TOPIC_ALARM, "OFF")
 
         col_reset, col_kontroll = st.columns(2)
-        if col_reset.button("🔄 RESET", help="Reset/Clear Status di ESP32", use_container_width=True) and is_online:
+        if col_reset.button("🔄 RESET", help="Reset/Clear Status di ESP32", width='stretch') and is_online:
             st.session_state.mqtt_client.publish(TOPIC_BRANKAS, "RESET")
-        if col_kontroll.button("OPEN", help="Memicu Open", use_container_width=True) and is_online:
+        if col_kontroll.button("OPEN", help="Memicu Open", width='stretch') and is_online:
             st.session_state.mqtt_client.publish(TOPIC_BRANKAS, "OPEN")
         
         st.markdown("---")
@@ -544,17 +544,18 @@ with tab1:
 
 with tab2: 
     st.subheader("Data Log Brankas (Raw)")
-    st.dataframe(st.session_state.data_brankas.iloc[::-1], use_container_width=True)
+    st.dataframe(st.session_state.data_brankas.iloc[::-1], width='stretch')
 
 with tab3:
     st.subheader("ML Logs (Wajah & Suara)")
     c_a, c_b = st.columns(2)
     c_a.write("Log Prediksi Wajah"); 
-    c_a.dataframe(st.session_state.data_face.tail(10).iloc[::-1], use_container_width=True)
+    c_a.dataframe(st.session_state.data_face.tail(10).iloc[::-1], width='stretch')
     c_b.write("Log Prediksi Suara"); 
-    c_b.dataframe(st.session_state.data_voice.tail(10).iloc[::-1], use_container_width=True)
+    c_b.dataframe(st.session_state.data_voice.tail(10).iloc[::-1], width='stretch')
 
 # Refresh otomatis
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
