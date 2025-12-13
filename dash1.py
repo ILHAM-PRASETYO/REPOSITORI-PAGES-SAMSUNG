@@ -509,7 +509,7 @@ with tab1:
         st.write("🔊 Audio Terakhir:")
         # 
 
-[Image of an audio waveform]
+#[Image of an audio waveform]
  
         if st.session_state.audio_url:
             st.audio(st.session_state.audio_url, format='audio/wav')
@@ -531,3 +531,4 @@ with tab3:
 if has_update or (time.time() - st.session_state.last_refresh > 3):
     st.session_state.last_refresh = time.time()
     st.rerun()
+
