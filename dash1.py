@@ -77,7 +77,7 @@ if "mqtt_thread_started" not in st.session_state:
 # ---------------------------
 # MQTT callbacks (use GLOBAL_MQ, NOT st.session_state inside callbacks)
 # ---------------------------
-def _on_connect(client, userdata, flags, rc):
+def _on_connect(client, userdata, flags, rc, *_):
     try:
         # Subscribe ke semua topik brankas dan ML
         client.subscribe([
@@ -370,3 +370,4 @@ with right:
 
 # after UI render, drain queue (so next rerun shows fresh data)
 process_queue()
+
